@@ -3,6 +3,7 @@ from pyrogram import Client
 from Script import text
 from vars import ADMIN_ID
 from Database.maindb import mdb
+from .cmds import send_video_logic
 
 @Client.on_callback_query()
 async def callback_query_handler(client, query: CallbackQuery):
@@ -59,6 +60,11 @@ async def callback_query_handler(client, query: CallbackQuery):
                         [InlineKeyboardButton("↩️ 𝖡𝖺𝖼𝗄", callback_data="help")]
                     ])
                 )
+
+        elif query.data == "getvideo":
+            await query.answer()
+            await send_video_logic(client, query.message)
+ 
 
         elif query.data == "close":
             await query.message.delete()
