@@ -15,3 +15,4 @@ AUTH_CHANNELS = list(map(int, os.environ.get("AUTH_CHANNEL", "").split()))
 DATABASE_CHANNEL_LOG = int(os.getenv("DATABASE_CHANNEL_LOG", "-1002412135872"))
 DELETE_TIMER = int(os.getenv("DELETE_TIMER", "300"))  # seconds (default 5 minutes)
 PROTECT_CONTENT = os.getenv("PROTECT_CONTENT", "True").lower() == "true"
+FREE_LIMIT = int(os.getenv("FREE_LIMIT", "50"))
