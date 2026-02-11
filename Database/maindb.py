@@ -1,5 +1,5 @@
 from motor.motor_asyncio import AsyncIOMotorClient
-from vars import MONGO_URI
+from vars import *
 from datetime import datetime, timedelta
 import asyncio
 from itertools import count
@@ -23,8 +23,7 @@ class Database:
 # Setlimit code:
     async def get_global_limits(self):
         default_limits = {
-            'free_limit': 50,
-            'prime_limit': 50,
+            'free_limit': FREE_LIMIT,
             'maintenance': False
         }
         db_limits = await self.async_global_limits.find_one({}) or {}
@@ -33,8 +32,7 @@ class Database:
     async def initialize_global_limits(self):
         if not await self.async_global_limits.find_one({}):
             await self.async_global_limits.insert_one({
-                'free_limit': 50,
-                'prime_limit': 50,
+                'free_limit': FREE_LIMIT,
                 'maintenance': False
             })
 
@@ -175,7 +173,7 @@ class Database:
                 {
                     "$set": {
                         "plan": "prime",
-                        "daily_limit": limits["prime_limit"],
+                        "daily_limit": None,
                         "daily_count": current_daily_count,
                         "prime_expiry": expiry_date,
                         "last_request_date": current_last_request,
@@ -292,5 +290,6 @@ def format_remaining_time(expiry):
     return f"{days}d {hours}h {minutes}m {seconds}s"
 
 mdb = Database()
+
 
 
