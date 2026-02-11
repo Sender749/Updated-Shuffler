@@ -14,7 +14,7 @@ async def callback_query_handler(client, query: CallbackQuery):
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🎬 Get Video", callback_data="getvideo")],
                     [InlineKeyboardButton("🍿 𝖡𝗎𝗒 𝖲𝗎𝖻𝗌𝖼𝗋𝗂𝗉𝗍𝗂𝗈𝗇 🍾", callback_data="pro")],
-                    [InlineKeyboardButton("ℹ️ 𝖠𝖻𝗈𝗎𝗍", callback_data="about"),
+                    [InlineKeyboardButton("ℹ️ Disclaimer", callback_data="about"),
                      InlineKeyboardButton("📚 𝖧𝖾𝗅𝗉", callback_data="help")]
                 ])
             )
@@ -45,7 +45,7 @@ async def callback_query_handler(client, query: CallbackQuery):
             await query.message.edit_caption(
                 caption=pro_text,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💳 𝖴𝗉𝗀𝗋𝖺𝖽𝖾 / 𝖯𝖺𝗒𝗆𝖾𝗇𝗍", user_id=int(ADMIN_ID))],
+                    [InlineKeyboardButton("💳 Send Screenshot", user_id=int(ADMIN_ID))],
                     [InlineKeyboardButton("↩️ 𝖡𝖺𝖼𝗄", callback_data="start"),
                      InlineKeyboardButton("❌ 𝖢𝗅𝗈𝗌𝖾", callback_data="close")]
                 ])
