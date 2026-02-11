@@ -5,9 +5,7 @@ class text(object):
 
 𝖯𝗅𝖾𝖺𝗌𝖾 𝗉𝗋𝗈𝖼𝖾𝖾𝖽 𝖺𝗍 𝗒𝗈𝗎𝗋 𝗈𝗐𝗇 𝗋𝗂𝗌𝗄.
 
-𝖲𝗈𝗆𝖾 𝗆𝖺𝗍𝖾𝗋𝗂𝖺𝗅 𝗆𝖺𝗒 𝗂𝗇𝖼𝗅𝗎𝖽𝖾 𝖾𝗑𝗉𝗅𝗂𝖼𝗂𝗍 𝗈𝗋 𝗀𝗋𝖺𝗉𝗁𝗂𝖼 𝖼𝗈𝗇𝗍𝖾𝗇𝗍 𝗍𝗁𝖺𝗍 𝗂𝗌 𝗇𝗈𝗍 𝗌𝗎𝗂𝗍𝖺𝖻𝗅𝖾 𝖿𝗈𝗋 𝗆𝗂𝗇𝗈𝗋𝗌.
-
-<blockquote><b>ᴍᴀɪɴᴛᴀɪɴᴇᴅ ʙʏ : <a href='https://telegram.me/TechifyBots'>ʀᴀʜᴜʟ</a></b></blockquote>"""
+𝖲𝗈𝗆𝖾 𝗆𝖺𝗍𝖾𝗋𝗂𝖺𝗅 𝗆𝖺𝗒 𝗂𝗇𝖼𝗅𝗎𝖽𝖾 𝖾𝗑𝗉𝗅𝗂𝖼𝗂𝗍 𝗈𝗋 𝗀𝗋𝖺𝗉𝗁𝗂𝖼 𝖼𝗈𝗇𝗍𝖾𝗇𝗍 𝗍𝗁𝖺𝗍 𝗂𝗌 𝗇𝗈𝗍 𝗌𝗎𝗂𝗍𝖺𝖻𝗅𝖾 𝖿𝗈𝗋 𝗆𝗂𝗇𝗈𝗋𝗌."""
 
   LOG = """👁️‍🗨️ 𝘜𝘚𝘌𝘙 𝘋𝘌𝘛𝘈𝘐𝘓𝘚
 
@@ -18,17 +16,11 @@ class text(object):
 
 𝘉𝘺 = @{}"""
 
-  ABOUT = """<b>‣ ᴍʏ ɴᴀᴍᴇ : <a href='https://youtube.com/@techifybots'>ᴘʀɪᴍᴇ ᴢᴏɴᴇ ʙᴏᴛ</a>
-‣ ʟɪʙʀᴀʀʏ : <a href='https://docs.pyrogram.org/'>ᴘʏʀᴏɢʀᴀᴍ</a> 
-‣ ᴅᴀᴛᴀʙᴀsᴇ : <a href='https://www.mongodb.com/'>ᴍᴏɴɢᴏᴅʙ</a>
-‣ ʟᴀɴɢᴜᴀɢᴇ : <a href='https://www.python.org/download/releases/3.0/'>ᴘʏᴛʜᴏɴ 𝟹</a> 
-‣ ʙᴏᴛ sᴇʀᴠᴇʀ : <a href='https://www.koyeb.com/'>ᴋᴏʏᴇʙ</a>
-‣ ᴄʀᴇᴀᴛᴇᴅ ʙʏ : <a href='https://telegram.me/callownerbot'>ʀᴀʜᴜʟ</a></b>"""
+  ABOUT = """⚠️ This bot is for adults (18+) only. All content is publicly available on the internet. Admin does not host any files and is not responsible for user actions. Use at your own responsibility. Contact admin for any issues."""
   
   PRO = """<b><u>🆓 𝖥𝗋𝖾𝖾 𝖯𝗅𝖺𝗇</u></b>
 
-» This plan allows you to request up to <b>{free_limit}</b> files per day.  
-» Each video must be under 5 minutes.  
+» Under free plan, each day you will get free <b>{free_limit}</b> files per day.    
 » Completely free — no payment required.
 
 If you want to unlock more content and enjoy a smoother experience, consider upgrading to a premium plan:
@@ -37,17 +29,16 @@ If you want to unlock more content and enjoy a smoother experience, consider upg
 
 <b>🥈 𝖲𝗂𝗅𝗏𝖾𝗋 𝖯𝗅𝖺𝗇</b>  
 » <b>1 Week</b> — 25 INR  
-» Daily limit: <b>{prime_limit}</b> files
 
 <b>🥇 𝖦𝗈𝗅𝖽 𝖯𝗅𝖺𝗇</b>  
 » <b>15 Days</b> — 40 INR  
-» Daily limit: <b>{prime_limit}</b> files
 
 <b>💠 𝖣𝗂𝖺𝗆𝗈𝗇𝖽 𝖯𝗅𝖺𝗇</b>  
 » <b>1 Month</b> — 60 INR  
-» Daily limit: <b>{prime_limit}</b> files
 
-<a href='https://techifybots.github.io/PayWeb'>📷 Click here to scan QR and pay</a>
+✨ ᴜᴘɪ ɪᴅ - <code>navex69@axl</code>
+💢 ᴍᴜsᴛ sᴇɴᴅ sᴄʀᴇᴇɴsʜᴏᴛ ᴀꜰᴛᴇʀ ᴘᴀʏᴍᴇɴᴛ
+‼️ ᴀꜰᴛᴇʀ sᴇɴᴅɪɴɢ ᴀ sᴄʀᴇᴇɴsʜᴏᴛ ᴘʟᴇᴀsᴇ ɢɪᴠᴇ ᴍᴇ sᴏᴍᴇ ᴛɪᴍᴇ ᴛᴏ ᴀᴅᴅ ʏᴏᴜ ɪɴ ᴛʜᴇ ᴘʀᴇᴍɪᴜᴍ ᴠᴇʀsɪᴏɴ.
 
 <blockquote>
 <b>Note:</b> Once a plan is selected, it cannot be changed.  
@@ -74,6 +65,8 @@ All payments are <b>non-refundable</b>, so please review your choice carefully b
 » /unban — Unban a specific user.
 
 » /banlist — To check banned Users.
+
+» /index — Index Manualy.
 
 » /stats — View detailed bot statistics.</b>"""
   
