@@ -58,16 +58,13 @@ async def send_video_logic(client: Client, message: Message):
     chat_id = message.chat.id
     task_key = f"{chat_id}_{user_id}"
 
-    # Cancel previous inactivity task
+    # Cancel previous timer
     if task_key in INACTIVITY_TASKS:
         INACTIVITY_TASKS[task_key].cancel()
         del INACTIVITY_TASKS[task_key]
 
     if await udb.is_user_banned(user_id):
-        await message.reply("**🚫 You are banned from using this bot**",
-                            reply_markup=InlineKeyboardMarkup(
-                                [[InlineKeyboardButton("Support 🧑‍💻", url=f"https://t.me/{ADMIN_USERNAME}")]]
-                            ))
+        await message.reply("**🚫 You are banned from using this bot**")
         return
 
     limits = await get_updated_limits()
@@ -82,31 +79,37 @@ async def send_video_logic(client: Client, message: Message):
     user = await mdb.get_user(user_id)
     plan = user.get("plan", "free")
 
-    # CACHE
-    if plan not in VIDEO_CACHE:
-        VIDEO_CACHE[plan] = await mdb.get_all_videos()
-
-    videos = VIDEO_CACHE.get(plan, [])
-
-    if not videos:
-        await message.reply_text("No videos available at the moment.")
-        return
-
-    # FREE USER LIMIT CHECK ONLY
+    # FREE LIMIT CHECK
     if plan == "free":
         daily_count = user.get("daily_count", 0)
-        daily_limit = limits["free_limit"]
-
-        if daily_count >= daily_limit:
+        if daily_count >= FREE_LIMIT:
             await message.reply_text(
-                f"**🚫 You've reached your daily limit of {daily_limit} videos.\n\nUpgrade to Prime for unlimited access.**"
+                f"**🚫 You've reached your daily limit of {FREE_LIMIT} videos.\n\nUpgrade to Prime for unlimited access.**"
             )
             return
 
-    random_video = random.choice(videos)
-    video_id = random_video["video_id"]
+    # CACHE
+    if "all" not in VIDEO_CACHE:
+        VIDEO_CACHE["all"] = await mdb.get_all_videos()
 
-    # Convert timer to minutes
+    videos = VIDEO_CACHE["all"]
+
+    if not videos:
+        await message.reply_text("No videos available.")
+        return
+
+    random_video = random.choice(videos)
+    channel_msg_id = random_video["video_id"]
+
+    # Fetch original message to get file_id
+    original_msg = await client.get_messages(DATABASE_CHANNEL_ID, channel_msg_id)
+
+    if not original_msg.video:
+        await message.reply_text("Invalid video data.")
+        return
+
+    file_id = original_msg.video.file_id
+
     delete_minutes = DELETE_TIMER // 60
 
     caption_text = (
@@ -118,35 +121,39 @@ async def send_video_logic(client: Client, message: Message):
 
     try:
 
-        # If previous message was a video → delete it first
         if message.video:
-            await message.delete()
-
-        sent = await client.copy_message(
-            chat_id=chat_id,
-            from_chat_id=DATABASE_CHANNEL_ID,
-            message_id=video_id,
-            caption=caption_text,
-            protect_content=PROTECT_CONTENT,
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🎬 Next Video", callback_data="getvideo")]]
+            await message.edit_media(
+                InputMediaVideo(
+                    media=file_id,
+                    caption=caption_text
+                ),
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("🎬 Next Video", callback_data="getvideo")]]
+                )
             )
-        )
+            sent_message = message
+        else:
+            sent_message = await client.send_video(
+                chat_id=chat_id,
+                video=file_id,
+                caption=caption_text,
+                protect_content=PROTECT_CONTENT,
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("🎬 Next Video", callback_data="getvideo")]]
+                )
+            )
 
-        # Increment count only for free
         if plan == "free":
             await mdb.increment_daily_count(user_id)
 
-        # Start inactivity timer
         task = asyncio.create_task(
-            inactivity_delete(client, chat_id, sent.id, user_id)
+            inactivity_delete(client, chat_id, sent_message.id, user_id)
         )
         INACTIVITY_TASKS[task_key] = task
 
     except Exception as e:
-        print(f"Error sending video: {e}")
-        await message.reply_text("Failed to send video..")
-
+        print(f"Edit error: {e}")
+        await message.reply_text("Failed to load video.")
 
 async def inactivity_delete(client: Client, chat_id: int, message_id: int, user_id: int):
     try:
@@ -169,6 +176,7 @@ async def inactivity_delete(client: Client, chat_id: int, message_id: int, user_
 
     except Exception as e:
         print(f"Inactivity delete error: {e}")
+
 
 
 
