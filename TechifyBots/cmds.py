@@ -38,6 +38,7 @@ async def start_command(client, message):
         photo=random.choice(PICS),
         caption=text.START.format(message.from_user.mention),
         reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎬 Get Video", callback_data="getvideo")],
             [InlineKeyboardButton("🍿 𝖡𝗎𝗒 𝖲𝗎𝖻𝗌𝖼𝗋𝗂𝗉𝗍𝗂𝗈𝗇 🍾", callback_data="pro")],
             [InlineKeyboardButton("ℹ️ 𝖠𝖻𝗈𝗎𝗍", callback_data="about"),
              InlineKeyboardButton("📚 𝖧𝖾𝗅𝗉", callback_data="help")] 
@@ -46,6 +47,9 @@ async def start_command(client, message):
 
 @Client.on_message(filters.command("getvideos") & filters.private)
 async def send_random_video(client: Client, message: Message):
+    await send_video_logic(client, message)
+
+async def send_video_logic(client: Client, message: Message):
     if await udb.is_user_banned(message.from_user.id):
         await message.reply("**🚫 You are banned from using this bot**",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support 🧑‍💻", url=f"https://t.me/{ADMIN_USERNAME}")]]))
         return
@@ -84,6 +88,7 @@ async def send_random_video(client: Client, message: Message):
         except Exception as e:
             print(f"Error sending video: {e}")
             await message.reply_text("Failed to send video..")
+
 
 
 
