@@ -23,21 +23,27 @@ async def my_plan(client, message):
     prime_expiry = user.get("prime_expiry")
     status_text = f""">**Plan Details**
 
-**User: {message.from_user.mention}**
-**User id: {user_id}**
-**User Plan: {plan.capitalize()}**
-**Daily Limit: {daily_limit}**
-**Today used: {daily_count}/{daily_limit}**
-**Total Remaining: {daily_limit - daily_count}**\n"""
-
+**User:** {message.from_user.mention}
+**User ID:** {user_id}
+**Plan:** {plan.capitalize()}
+"""
+    if plan == "free":
+        status_text += f"""
+**Daily Limit:** {FREE_LIMIT}
+**Today Used:** {daily_count}/{FREE_LIMIT}
+**Remaining:** {max(FREE_LIMIT - daily_count, 0)}
+"""
+        if daily_count >= FREE_LIMIT:
+            status_text += "\n⚠️ You've reached your daily limit."
     if plan == "prime" and prime_expiry:
         IST = pytz.timezone('Asia/Kolkata')
-        if prime_expiry and prime_expiry.tzinfo is None:
-            prime_expiry = prime_expiry.astimezone(IST)
-        status_text += f"\n**Expire Time: {prime_expiry.strftime('%I:%M %p IST')}**"
-        status_text += f"\n**Expire Date: {prime_expiry.strftime('%d/%m/%Y')}**"
-    if daily_count >= daily_limit and plan == "free":
-         status_text += "\n**⚠️ You've reached your daily limit.**"
+        if prime_expiry.tzinfo is None:
+            prime_expiry = IST.localize(prime_expiry)
+        status_text += f"""
+🌟 **Unlimited Video Access**
+⏳ **Expire Time:** {prime_expiry.strftime('%I:%M %p IST')}
+📅 **Expire Date:** {prime_expiry.strftime('%d/%m/%Y')}
+"""
     await message.reply_text(status_text)
 
 @Client.on_message(filters.command("prime") & filters.private)
@@ -104,3 +110,4 @@ async def set_limit(client, message):
         return
     await mdb.update_global_limit(limit_type, new_value)
     await message.reply_text(f"**✅ {limit_type.capitalize()} limit updated to {new_value} for all users**")
+
