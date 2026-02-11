@@ -13,6 +13,5 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "Navex_69") # Without @
 IS_FSUB = bool(os.environ.get("FSUB", False))
 AUTH_CHANNELS = list(map(int, os.environ.get("AUTH_CHANNEL", "").split()))
 DATABASE_CHANNEL_LOG = int(os.getenv("DATABASE_CHANNEL_LOG", "-1002412135872"))
-FREE_VIDEO_DURATION = int(os.getenv("FREE_VIDEO_DURATION", "240"))
 DELETE_TIMER = int(os.getenv("DELETE_TIMER", "300"))  # seconds (default 5 minutes)
-PROTECT_CONTENT  = bool(os.environ.get("PROTECT_CONTENT ", True))
+PROTECT_CONTENT = os.getenv("PROTECT_CONTENT", "True").lower() == "true"
