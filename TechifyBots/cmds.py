@@ -15,7 +15,6 @@ async def get_updated_limits():
         global FREE_LIMIT, PRIME_LIMIT
         limits = await mdb.get_global_limits()
         FREE_LIMIT = limits["free_limit"]
-        PRIME_LIMIT = limits["prime_limit"]
         return limits
 
 @Client.on_message(filters.command("start") & filters.private)
@@ -176,6 +175,7 @@ async def inactivity_delete(client: Client, chat_id: int, message_id: int, user_
 
     except Exception as e:
         print(f"Inactivity delete error: {e}")
+
 
 
 
