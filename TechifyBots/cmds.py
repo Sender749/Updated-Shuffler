@@ -81,13 +81,15 @@ async def send_video_logic(client: Client, message: Message):
                 chat_id=message.chat.id,
                 from_chat_id=DATABASE_CHANNEL_ID,
                 message_id=video_id,
-                caption=caption_text)
+                caption=caption_text,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get Next Video", callback_data="getvideo")]]))
             await mdb.increment_daily_count(user_id)
             await asyncio.sleep(300)
             await dy.delete()
         except Exception as e:
             print(f"Error sending video: {e}")
             await message.reply_text("Failed to send video..")
+
 
 
 
