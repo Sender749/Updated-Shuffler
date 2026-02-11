@@ -90,10 +90,10 @@ async def send_video_logic(client: Client, message: Message):
     delete_minutes = DELETE_TIMER // 60
     if plan == "free":
         daily_count = user.get("daily_count", 0)
-        usage_text = f"\n📊 Limit: {daily_count + 1}/{FREE_LIMIT}"
+        usage_text = f"📊 Limit: {daily_count + 1}/{FREE_LIMIT}"
     else:
-        usage_text = "\n🌟 Prime User: Unlimited Access"
-    caption_text = (f"<b><blockquote>⚠️ This video will auto delete in {delete_minutes} minutes.</blockquote>\n\n{usage_text}"</b>")
+        usage_text = "🌟 Prime User: Unlimited Access"
+    caption_text = (f"<b><blockquote>⚠️ This video will auto delete in {delete_minutes} minutes.</blockquote>\n\n🆔 File ID: <code>{channel_msg_id}</code>\n{usage_text}</b>")
     try:
         if message.video:
             await message.edit_media(
@@ -128,6 +128,7 @@ async def inactivity_delete(client: Client, chat_id: int, message_id: int, user_
             del INACTIVITY_TASKS[task_key]
     except Exception as e:
         print(f"Inactivity delete error: {e}")
+
 
 
 
