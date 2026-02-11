@@ -95,6 +95,7 @@ async def send_video_logic(client: Client, message: Message):
                 InputMediaVideo(
                     media=video_id,
                     caption=caption_text),
+                    protect_content=PROTECT_CONTENT,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Next Video", callback_data="getvideo")]]))
             sent_message = message
         else:
@@ -102,6 +103,7 @@ async def send_video_logic(client: Client, message: Message):
                 chat_id=chat_id,
                 video=video_id,
                 caption=caption_text,
+                protect_content=PROTECT_CONTENT,
                 reply_markup=InlineKeyboardMarkup(
                     [[InlineKeyboardButton("🎬 Next Video", callback_data="getvideo")]]
                 )
@@ -127,3 +129,4 @@ async def inactivity_delete(client: Client, chat_id: int, message_id: int, user_
             del INACTIVITY_TASKS[task_key]
     except Exception as e:
         print(f"Inactivity delete error: {e}")
+
