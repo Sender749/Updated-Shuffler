@@ -33,7 +33,7 @@ class Database:
     async def initialize_global_limits(self):
         if not await self.async_global_limits.find_one({}):
             await self.async_global_limits.insert_one({
-                'free_limit': 10,
+                'free_limit': 50,
                 'prime_limit': 50,
                 'maintenance': False
             })
@@ -95,7 +95,7 @@ class Database:
         if not limits:
             default_limits = {
                 "_id": "global_limits",
-                "free_limit": 10,
+                "free_limit": 50,
                 "prime_limit": 50
             }
             await self.async_limits_collection.insert_one(default_limits)
@@ -292,4 +292,5 @@ def format_remaining_time(expiry):
     return f"{days}d {hours}h {minutes}m {seconds}s"
 
 mdb = Database()
+
 
