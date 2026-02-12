@@ -11,29 +11,31 @@ from Script import text
 VIDEO_CACHE = {}
 USER_ACTIVE_VIDEOS = {}
 
-async def get_usage_text(user_id: int) -> str:
-    """Get consistent usage text for user based on their plan"""
+async def check_and_get_user_status(user_id: int):
+    """Check user status and return (is_prime, usage_text, can_continue)"""
     user = await mdb.get_user(user_id)
     plan = user.get("plan", "free")
     
+    # Check if premium has expired
     if plan == "prime":
-        # Check if premium has expired
         prime_expiry = user.get("prime_expiry")
         if prime_expiry and prime_expiry < datetime.now():
-            # Premium expired, show free limit
             await mdb.remove_premium(user_id)
             user = await mdb.get_user(user_id)
             plan = "free"
-        else:
-            return "🌟 Prime User: Unlimited Access"
     
-    if plan == "free":
-        limits = await mdb.get_global_limits()
-        FREE_LIMIT = limits["free_limit"]
-        daily_count = user.get("daily_count", 0)
-        return f"📊 Limit: {daily_count}/{FREE_LIMIT}"
+    if plan == "prime":
+        return True, "🌟 Prime User: Unlimited Access", True
     
-    return "📊 Limit: 0/0"
+    # Free user - check limit
+    limits = await mdb.get_global_limits()
+    FREE_LIMIT = limits["free_limit"]
+    daily_count = user.get("daily_count", 0)
+    
+    if daily_count >= FREE_LIMIT:
+        return False, f"📊 Limit: {daily_count}/{FREE_LIMIT}", False
+    
+    return False, f"📊 Limit: {daily_count}/{FREE_LIMIT}", True
 
 @Client.on_message(filters.command("start") & filters.private)
 async def start_command(client, message):
@@ -85,29 +87,19 @@ async def send_video_logic(client: Client, message: Message):
     if IS_FSUB and not await get_fsub(client, message):
         return
     
-    user = await mdb.get_user(user_id)
-    plan = user.get("plan", "free")
+    # Check user status
+    is_prime, usage_text, can_continue = await check_and_get_user_status(user_id)
     
-    # Check if premium has expired
-    if plan == "prime":
-        prime_expiry = user.get("prime_expiry")
-        if prime_expiry and prime_expiry < datetime.now():
-            await mdb.remove_premium(user_id)
-            user = await mdb.get_user(user_id)
-            plan = "free"
-    
-    # Check limit for free users only
-    if plan == "free":
+    if not can_continue:
         FREE_LIMIT = limits["free_limit"]
-        daily_count = user.get("daily_count", 0)
-        if daily_count >= FREE_LIMIT:
-            await message.reply_text(f"**🚫 You've reached your daily limit of {FREE_LIMIT} videos.\n\nUpgrade to Prime for unlimited access.**")
-            return
-        # Increment count for free users
-        await mdb.increment_daily_count(user_id)
+        await message.reply_text(f"**🚫 You've reached your daily limit of {FREE_LIMIT} videos.\n\nUpgrade to Prime for unlimited access.**")
+        return
     
-    # Get usage text after incrementing (if applicable)
-    usage_text = await get_usage_text(user_id)
+    # Increment count only for free users
+    if not is_prime:
+        await mdb.increment_daily_count(user_id)
+        # Refresh usage text after increment
+        _, usage_text, _ = await check_and_get_user_status(user_id)
     
     if "all" not in VIDEO_CACHE:
         VIDEO_CACHE["all"] = await mdb.get_all_videos()
@@ -118,21 +110,28 @@ async def send_video_logic(client: Client, message: Message):
         return
     
     random_video = random.choice(videos)
-    channel_msg_id = random_video["video_id"]
+    video_id = random_video["video_id"]
+    channel_id = random_video.get("channel_id", DATABASE_CHANNEL_ID[0])
     
-    original_msg = await client.get_messages(DATABASE_CHANNEL_ID, channel_msg_id)
-    if not original_msg.video:
+    try:
+        original_msg = await client.get_messages(channel_id, video_id)
+    except Exception as e:
+        print(f"Error fetching video: {e}")
+        await message.reply_text("Failed to fetch video. It may have been deleted.")
+        return
+    
+    if not original_msg or not original_msg.video:
         await message.reply_text("Invalid video data.")
         return
     
     file_id = original_msg.video.file_id
     delete_minutes = DELETE_TIMER // 60
-    caption_text = (f"<b><blockquote>⚠️ This video will auto delete in {delete_minutes} minutes.</blockquote>\n\n🆔 File ID: <code>{channel_msg_id}</code>\n{usage_text}</b>")
+    caption_text = (f"<b><blockquote>⚠️ This video will auto delete in {delete_minutes} minutes.</blockquote>\n\n🆔 File ID: <code>{video_id}</code>\n{usage_text}</b>")
     
     try:
         if message.video:
             await message.edit_media(
-                InputMediaVideo(media=file_id,caption=caption_text),
+                InputMediaVideo(media=file_id, caption=caption_text),
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Next Video", callback_data="getvideo")]]))
             sent_message = message
         else:
@@ -145,7 +144,7 @@ async def send_video_logic(client: Client, message: Message):
         USER_ACTIVE_VIDEOS.setdefault(user_id, set()).add(sent_message.id)
         asyncio.create_task(auto_delete_video(client, chat_id, sent_message.id, user_id))
     except Exception as e:
-        print(f"Edit error: {e}")
+        print(f"Send video error: {e}")
         await message.reply_text("Failed to load video.")
 
 async def auto_delete_video(client: Client, chat_id: int, message_id: int, user_id: int):
