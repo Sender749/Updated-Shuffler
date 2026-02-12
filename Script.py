@@ -50,6 +50,8 @@ All payments are <b>non-refundable</b>, so please review your choice carefully b
 
 » /resetlimits — Reset the daily count to 0 for all free users.
 
+» /index — Manually index videos from database channels.
+
 » /maintenance — Toggle maintenance mode ON or OFF.
 
 » /prime — Add a user to the Prime membership.
@@ -67,8 +69,6 @@ All payments are <b>non-refundable</b>, so please review your choice carefully b
 » /unban — Unban a specific user.
 
 » /banlist — To check banned Users.
-
-» /index — Index Manualy.
 
 » /stats — View detailed bot statistics.</b>"""
   
