@@ -21,6 +21,7 @@ async def my_plan(client, message):
     daily_count = user.get("daily_count", 0)
     daily_limit = user.get("daily_limit", FREE_LIMIT)
     prime_expiry = user.get("prime_expiry")
+    new_count = await mdb.increment_daily_count(user_id)
     status_text = f""">**Plan Details**
 
 **User:** {message.from_user.mention}
@@ -30,7 +31,7 @@ async def my_plan(client, message):
     if plan == "free":
         status_text += f"""
 **Daily Limit:** {FREE_LIMIT}
-**Today Used:** {daily_count}/{FREE_LIMIT}
+**Today Used:** {new_count}/{FREE_LIMIT}
 **Remaining:** {max(FREE_LIMIT - daily_count, 0)}
 """
         if daily_count >= FREE_LIMIT:
@@ -110,4 +111,5 @@ async def set_limit(client, message):
         return
     await mdb.update_global_limit(limit_type, new_value)
     await message.reply_text(f"**✅ {limit_type.capitalize()} limit updated to {new_value} for all users**")
+
 
