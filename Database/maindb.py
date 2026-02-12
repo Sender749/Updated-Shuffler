@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 import asyncio
 from itertools import count
 from bot import bot
-from itertools import count
 from zoneinfo import ZoneInfo
 
 class Database:
@@ -36,13 +35,6 @@ class Database:
                 'maintenance': False
             })
 
-    async def update_global_limits(self, free_limit: int, prime_limit: int):
-        await self.async_limits_collection.update_one(
-            {"_id": "global_limits"},
-            {"$set": {"free_limit": free_limit, "prime_limit": prime_limit}},
-            upsert=True
-        )
-
     async def increment_daily_count(self, user_id: int):
         user = await self.get_user(user_id)
         today = datetime.now()
@@ -60,26 +52,26 @@ class Database:
             await self.async_limits_collection.update_one(
                 {"_id": "global_limits"},
                 {"$set": {"free_limit": new_value}},
-                upsert=False
+                upsert=True
             )
             await self.async_global_limits.update_one(
                 {},
                 {"$set": {"free_limit": new_value}},
-                upsert=False
-            )
-        elif limit_type == "prime":
-            await self.async_user_collection.update_many({"plan": "prime"}, {"$set": {"daily_limit": new_value}})
-            await self.async_limits_collection.update_one(
-                {"_id": "global_limits"},
-                {"$set": {"prime_limit": new_value}},
-                upsert=False
-            )
-            await self.async_global_limits.update_one(
-                {},
-                {"$set": {"prime_limit": new_value}},
-                upsert=False
+                upsert=True
             )
         return True
+
+    async def reset_all_free_limits(self):
+        """Reset daily count to 0 for all free users - Admin command"""
+        try:
+            result = await self.async_user_collection.update_many(
+                {"plan": "free"},
+                {"$set": {"daily_count": 0, "last_request_date": datetime.now()}}
+            )
+            return result.modified_count
+        except Exception as e:
+            print(f"Error resetting free limits: {e}")
+            return 0
 
 # Maintenance code:
 
@@ -93,8 +85,7 @@ class Database:
         if not limits:
             default_limits = {
                 "_id": "global_limits",
-                "free_limit": 50,
-                "prime_limit": 50
+                "free_limit": FREE_LIMIT
             }
             await self.async_limits_collection.insert_one(default_limits)
             return default_limits
@@ -114,8 +105,9 @@ class Database:
                 sleep_seconds = (target_time - now).total_seconds()
                 if sleep_seconds > 0:
                     await asyncio.sleep(sleep_seconds)
+                # Only reset free users, not prime users
                 await self.async_user_collection.update_many(
-                    {},
+                    {"plan": "free"},
                     {"$set": {"daily_count": 0, "last_request_date": datetime.now(IST)}}
                 )
                 self.last_reset_time = datetime.now(IST)
@@ -161,22 +153,21 @@ class Database:
             elif unit == 'y':
                 expiry_date += timedelta(days=amount*365)
             expiry_date = expiry_date.replace(second=0, microsecond=0)
-            limits = await self.get_global_limits()
+            
             user = await self.get_user(user_id)
             if user.get('plan') == 'prime':
                 await self.remove_premium(user_id)
                 user = await self.get_user(user_id)
-            current_daily_count = user.get('daily_count', 0)
-            current_last_request = user.get('last_request_date', now)
+            
             result = await self.async_user_collection.update_one(
                 {"_id": user_id},
                 {
                     "$set": {
                         "plan": "prime",
                         "daily_limit": None,
-                        "daily_count": current_daily_count,
+                        "daily_count": 0,  # Reset count when becoming prime
                         "prime_expiry": expiry_date,
-                        "last_request_date": current_last_request,
+                        "last_request_date": now,
                         "remaining_time": format_remaining_time(expiry_date)
                     }
                 }
@@ -196,6 +187,7 @@ class Database:
             {"$set": {
                 "plan": "free",
                 "daily_limit": limits["free_limit"],
+                "daily_count": 0,  # Reset count when reverting to free
                 "has_premium": False
             },
             "$unset": {
@@ -290,6 +282,3 @@ def format_remaining_time(expiry):
     return f"{days}d {hours}h {minutes}m {seconds}s"
 
 mdb = Database()
-
-
-
