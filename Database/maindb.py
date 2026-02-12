@@ -17,18 +17,7 @@ class Database:
         self.async_global_limits = self.async_db["global_limits"]
         asyncio.create_task(self.check_and_reset_daily_counts())
         asyncio.create_task(self.check_premium_expire())
-        # Create unique index on video_id and channel_id to prevent duplicates
-        asyncio.create_task(self._create_indexes())
-    
-    async def _create_indexes(self):
-        """Create database indexes"""
-        try:
-            await self.async_video_collection.create_index(
-                [("video_id", 1), ("channel_id", 1)], 
-                unique=True
-            )
-        except Exception as e:
-            print(f"Index creation error: {e}")
+        
 
 # Setlimit code:
     async def get_global_limits(self):
@@ -210,24 +199,15 @@ class Database:
 
 # Video index Codes:
 
-    async def save_video_id(self, video_id: int, channel_id: int, duration: int = 0):
-        """Save video with channel_id and duration - prevents duplicates"""
+    async def save_video_id(self, video_id: int, duration: int, is_premium: bool = False):
         video_data = {
             "video_id": video_id,
-            "channel_id": channel_id,
             "duration": duration,
+            "is_premium": is_premium,
             "added_at": datetime.now()
         }
-        
-        try:
+        if not await self.async_video_collection.find_one({"video_id": video_id}):
             await self.async_video_collection.insert_one(video_data)
-            return 'suc'
-        except Exception as e:
-            # Duplicate key error
-            if "duplicate" in str(e).lower() or "11000" in str(e):
-                return 'dup'
-            print(f"Error saving video: {e}")
-            return 'err'
 
     async def get_all_videos(self):
         videos = []
@@ -240,7 +220,7 @@ class Database:
 
     async def get_free_videos(self):
         videos = []
-        async for video in self.async_video_collection.find({}):
+        async for video in self.async_video_collection.find({"is_premium": False}):
             videos.append(video)
         return videos
 
@@ -284,7 +264,6 @@ class Database:
             {"_id": user_id},
             {"$pull": {"sent_videos": {"video_id": video_id}}}
         )
-    
     async def delete_all_videos(self):
         await self.async_video_collection.delete_many({})
 
