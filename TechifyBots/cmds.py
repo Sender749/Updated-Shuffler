@@ -10,6 +10,7 @@ from Script import text
 
 VIDEO_CACHE = {}
 ACTIVE_VIDEO_MESSAGES = set()
+USER_ACTIVE_VIDEOS = {}
 
 async def get_updated_limits():
         global FREE_LIMIT
@@ -70,6 +71,10 @@ async def send_video_logic(client: Client, message: Message):
         if daily_count >= FREE_LIMIT:
             await message.reply_text(f"**🚫 You've reached your daily limit of {FREE_LIMIT} videos.\n\nUpgrade to Prime for unlimited access.**")
             return
+        new_count = await mdb.increment_daily_count(user_id)
+        usage_text = f"📊 Limit: {new_count}/{FREE_LIMIT}"
+    else:
+        usage_text = "🌟 Prime User: Unlimited Access"
     if "all" not in VIDEO_CACHE:
         VIDEO_CACHE["all"] = await mdb.get_all_videos()
     videos = VIDEO_CACHE["all"]
@@ -84,11 +89,6 @@ async def send_video_logic(client: Client, message: Message):
         return
     file_id = original_msg.video.file_id
     delete_minutes = DELETE_TIMER // 60
-    if plan == "free":
-        new_count = await mdb.increment_daily_count(user_id)
-        usage_text = f"📊 Limit: {new_count}/{FREE_LIMIT}"
-    else:
-        usage_text = "🌟 Prime User: Unlimited Access"
     caption_text = (f"<b><blockquote>⚠️ This video will auto delete in {delete_minutes} minutes.</blockquote>\n\n🆔 File ID: <code>{channel_msg_id}</code>\n{usage_text}</b>")
     try:
         if message.video:
@@ -103,18 +103,24 @@ async def send_video_logic(client: Client, message: Message):
                 caption=caption_text,
                 protect_content=PROTECT_CONTENT,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Next Video", callback_data="getvideo")]]))
-        asyncio.create_task(auto_delete_video(client, chat_id, sent_message.id))
+        USER_ACTIVE_VIDEOS.setdefault(user_id, set()).add(sent_message.id)
+        asyncio.create_task(auto_delete_video(client, chat_id, sent_message.id, user_id))
     except Exception as e:
         print(f"Edit error: {e}")
         await message.reply_text("Failed to load video.")
 
-async def auto_delete_video(client: Client, chat_id: int, message_id: int):
+async def auto_delete_video(client: Client, chat_id: int, message_id: int, user_id: int):
     try:
         await asyncio.sleep(DELETE_TIMER)
         try:
             await client.delete_messages(chat_id, message_id)
         except:
-            return 
-        await client.send_message(chat_id,"✅ Video deleted successfully.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")]]))
+            pass 
+        if user_id in USER_ACTIVE_VIDEOS:
+            USER_ACTIVE_VIDEOS[user_id].discard(message_id)
+            if not USER_ACTIVE_VIDEOS[user_id]:
+                USER_ACTIVE_VIDEOS.pop(user_id, None)
+                await client.send_message(chat_id, "✅ Video deleted successfully.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")]]))
     except Exception as e:
         print(f"Auto delete error: {e}")
+
