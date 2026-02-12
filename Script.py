@@ -46,7 +46,9 @@ All payments are <b>non-refundable</b>, so please review your choice carefully b
 
   ADMIN_COMMANDS = """<b><u>⭐ Admin Commands</u>
                                       
-» /setlimit — Increase the daily usage limit for any user (applies to both Free and Prime users).
+» /setlimit — Update the daily usage limit for free users.
+
+» /resetlimits — Reset the daily count to 0 for all free users.
 
 » /maintenance — Toggle maintenance mode ON or OFF.
 
