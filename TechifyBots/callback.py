@@ -41,7 +41,7 @@ async def callback_query_handler(client, query: CallbackQuery):
 
         elif query.data == "pro":
             current_limits = await mdb.get_global_limits()
-            pro_text = text.PRO.format(free_limit=current_limits['free_limit'], prime_limit=current_limits['prime_limit'])
+            pro_text = text.PRO.format(free_limit=current_limits['free_limit'])
             await query.message.edit_caption(
                 caption=pro_text,
                 reply_markup=InlineKeyboardMarkup([
