@@ -5,6 +5,7 @@ from Database.userdb import udb
 from .fsub import get_fsub
 from Database.maindb import mdb
 import pytz
+from datetime import datetime
 
 @Client.on_message(filters.command("myplan") & filters.private)
 async def my_plan(client, message):
@@ -12,16 +13,23 @@ async def my_plan(client, message):
         await message.reply("**🚫 You are banned from using this bot**",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support 🧑‍💻", url=f"https://t.me/{ADMIN_USERNAME}")]]))
         return
     if IS_FSUB and not await get_fsub(client, message):return
+    
     global_limits = await mdb.get_global_limits()
     FREE_LIMIT = global_limits["free_limit"]
     user_id = message.from_user.id
     user = await mdb.get_user(user_id)
-    user = await mdb.get_user(user_id)
     plan = user.get("plan", "free")
     daily_count = user.get("daily_count", 0)
-    daily_limit = user.get("daily_limit", FREE_LIMIT)
     prime_expiry = user.get("prime_expiry")
-    new_count = await mdb.increment_daily_count(user_id)
+    
+    # Check if premium has expired
+    if plan == "prime" and prime_expiry:
+        if prime_expiry < datetime.now():
+            await mdb.remove_premium(user_id)
+            user = await mdb.get_user(user_id)
+            plan = "free"
+            daily_count = user.get("daily_count", 0)
+    
     status_text = f""">**Plan Details**
 
 **User:** {message.from_user.mention}
@@ -31,11 +39,12 @@ async def my_plan(client, message):
     if plan == "free":
         status_text += f"""
 **Daily Limit:** {FREE_LIMIT}
-**Today Used:** {new_count}/{FREE_LIMIT}
+**Today Used:** {daily_count}/{FREE_LIMIT}
 **Remaining:** {max(FREE_LIMIT - daily_count, 0)}
 """
         if daily_count >= FREE_LIMIT:
             status_text += "\n⚠️ You've reached your daily limit."
+    
     if plan == "prime" and prime_expiry:
         IST = pytz.timezone('Asia/Kolkata')
         if prime_expiry.tzinfo is None:
@@ -94,22 +103,27 @@ async def remove_prime(client, message):
 @Client.on_message(filters.command("setlimit") & filters.private)
 async def set_limit(client, message):
     if message.from_user.id != ADMIN_ID:
-        message.delete()
+        await message.delete()
         await message.reply_text("**🚫 You're not authorized to use this command...**")
         return
-    if len(message.command) != 3:
-        await message.reply_text("**Usage: /setlimit {free / prime} {new_value}**")
+    if len(message.command) != 2:
+        await message.reply_text("**Usage: /setlimit {new_free_limit}**")
         return
-    limit_type = message.command[1].lower()
     try:
-        new_value = int(message.command[2])
+        new_value = int(message.command[1])
     except ValueError:
         await message.reply_text("**⚠️ Please provide a valid number for the new limit value**")
         return
-    if limit_type not in ("free", "prime"):
-        await message.reply_text("**⚠️ Invalid limit type. Use 'free' or 'prime'**")
+    
+    await mdb.update_global_limit("free", new_value)
+    await message.reply_text(f"**✅ Free limit updated to {new_value} for all users**")
+
+@Client.on_message(filters.command("resetlimits") & filters.private)
+async def reset_limits(client, message):
+    if message.from_user.id != ADMIN_ID:
+        await message.delete()
+        await message.reply_text("**🚫 You're not authorized to use this command...**")
         return
-    await mdb.update_global_limit(limit_type, new_value)
-    await message.reply_text(f"**✅ {limit_type.capitalize()} limit updated to {new_value} for all users**")
-
-
+    
+    count = await mdb.reset_all_free_limits()
+    await message.reply_text(f"**✅ Daily limits have been reset for {count} free users**")
