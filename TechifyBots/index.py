@@ -58,8 +58,10 @@ async def index_channel_selected(client: Client, callback_query: CallbackQuery):
 
     await callback_query.answer()
 
-@Client.on_message(filters.private & filters.user(ADMIN_ID))
+@Client.on_message(filters.private & filters.user(ADMIN_ID) & filters.text)
 async def receive_skip_number(client: Client, message: Message):
+    if message.text.startswith("/"):
+        return
     data = INDEX_TASKS.get(message.from_user.id)
 
     if not data or data.get("state") != "await_skip":
@@ -70,12 +72,15 @@ async def receive_skip_number(client: Client, message: Message):
     text = message.text.strip()
 
     if "t.me" in text:
-        skip_id = int(text.split("/")[-1])
+        match = re.search(r"/(\d+)", text)
+        if not match:
+            return await message.reply_text("Invalid link.")
+        skip_id = int(match.group(1))
     else:
+        if not text.isdigit():
+            return await message.reply_text("Invalid message ID.")
         skip_id = int(text)
-
     await message.delete()
-
     progress_msg = await message.reply_text(
         "⏳ Starting Indexing...",
         reply_markup=InlineKeyboardMarkup(
@@ -119,8 +124,9 @@ async def start_indexing(client: Client, user_id: int):
     error = 0
     count = 0
 
-    async for msg in client.get_chat_history(channel_id, offset_id=skip_id):
+    async for msg in client.get_chat_history(channel_id, offset_id=skip_id, reverse=True):
         if data["cancel"]:
+            INDEX_TASKS.pop(user_id, None)
             return
 
         if not msg.video:
@@ -128,6 +134,10 @@ async def start_indexing(client: Client, user_id: int):
 
         try:
             existing = await mdb.async_video_collection.find_one({"video_id": msg.id})
+            if msg.empty:
+                deleted += 1
+                continue
+
             if existing:
                 duplicate += 1
             else:
@@ -166,4 +176,5 @@ async def start_indexing(client: Client, user_id: int):
     )
 
     INDEX_TASKS.pop(user_id, None)
+
 
