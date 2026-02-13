@@ -53,37 +53,6 @@ async def manual_index_cmd(client: Client, message: Message):
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-
-@Client.on_callback_query(filters.regex("^index_select_"))
-async def index_channel_selected(client: Client, callback_query: CallbackQuery):
-
-    debug_log(f"Callback received: {callback_query.data}")
-    debug_log(f"User ID: {callback_query.from_user.id}")
-
-    await callback_query.answer()
-
-    channel_id = int(callback_query.data.split("_")[-1])
-    debug_log(f"Parsed channel_id: {channel_id}")
-
-    try:
-        await callback_query.message.edit_text(
-            f"**Send Skip Message ID or Message Link**\n\nChannel: `{channel_id}`",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]]
-            )
-        )
-        debug_log("Message edited successfully.")
-    except Exception as e:
-        debug_log(f"Edit failed: {e}")
-
-    INDEX_TASKS[callback_query.from_user.id] = {
-        "channel_id": channel_id,
-        "state": "await_skip"
-    }
-
-    debug_log(f"State stored: {INDEX_TASKS.get(callback_query.from_user.id)}")
-
-
 @Client.on_message(filters.private & filters.user(ADMIN_ID) & filters.text)
 async def receive_skip_number(client: Client, message: Message):
 
@@ -101,18 +70,6 @@ async def receive_skip_number(client: Client, message: Message):
         return
 
     debug_log("State matched. Proceeding to skip parsing.")
-
-@Client.on_callback_query(filters.regex("^index_cancel$"))
-async def cancel_indexing(client: Client, callback_query: CallbackQuery):
-    await callback_query.answer()
-    user_id = callback_query.from_user.id
-    task = INDEX_TASKS.get(user_id)
-    if task:
-        task["cancel"] = True
-    try:
-        await callback_query.message.edit_text("❌ Indexing Cancelled.")
-    except:
-        pass
 
 async def start_indexing(client: Client, user_id: int):
     data = INDEX_TASKS.get(user_id)
@@ -227,6 +184,7 @@ Total Processed: {count}
         pass
 
     INDEX_TASKS.pop(user_id, None)
+
 
 
 
