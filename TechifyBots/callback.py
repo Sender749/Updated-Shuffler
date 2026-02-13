@@ -4,6 +4,8 @@ from Script import text
 from vars import ADMIN_ID
 from Database.maindb import mdb
 from .cmds import send_video_logic
+from .index import INDEX_TASKS, start_indexing
+import asyncio
 
 @Client.on_callback_query()
 async def callback_query_handler(client, query: CallbackQuery):
@@ -18,6 +20,30 @@ async def callback_query_handler(client, query: CallbackQuery):
                      InlineKeyboardButton("📚 𝖧𝖾𝗅𝗉", callback_data="help")]
                 ])
             )
+        
+        elif query.data.startswith("index_select_"):
+            await query.answer()
+            channel_id = int(query.data.split("_")[-1])
+            try:
+                await query.message.edit_text(
+                    f"**Send Skip Message ID or Message Link**\n\nChannel: `{channel_id}`",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]]))
+            except:
+                pass
+            INDEX_TASKS[query.from_user.id] = {"channel_id": channel_id,"state": "await_skip"}
+            return
+        
+        elif query.data == "index_cancel":
+            await query.answer()
+            user_id = query.from_user.id
+            task = INDEX_TASKS.get(user_id)
+            if task:
+                task["cancel"] = True
+            try:
+                await query.message.edit_text("❌ Indexing Cancelled.")
+            except:
+                pass
+            return
 
         elif query.data == "help":
             await query.message.edit_caption(
