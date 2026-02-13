@@ -64,8 +64,7 @@ async def callback_query_handler(client, query: CallbackQuery):
 
         elif query.data == "getvideo":
             await query.answer()
-            query.message.from_user = query.from_user
-            await send_video_logic(client, query.message)
+            await send_video_logic(client, query.message, user_id=query.from_user.id)
  
 
         elif query.data == "close":
