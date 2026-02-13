@@ -199,9 +199,10 @@ class Database:
 
 # Video index Codes:
 
-    async def save_video_id(self, video_id: int, duration: int, is_premium: bool = False):
+    async def save_video_id(self, video_id: int,file_id: str, duration: int, is_premium: bool = False):
         video_data = {
             "video_id": video_id,
+            "file_id": file_id,
             "duration": duration,
             "is_premium": is_premium,
             "added_at": datetime.now()
@@ -282,3 +283,4 @@ def format_remaining_time(expiry):
     return f"{days}d {hours}h {minutes}m {seconds}s"
 
 mdb = Database()
+
