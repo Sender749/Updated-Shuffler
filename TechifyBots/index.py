@@ -45,21 +45,21 @@ async def manual_index_cmd(client: Client, message: Message):
 
 @Client.on_callback_query(filters.regex("^index_select_"))
 async def index_channel_selected(client: Client, callback_query: CallbackQuery):
+    await callback_query.answer()   
     channel_id = int(callback_query.data.split("_")[-1])
-
-    await callback_query.message.edit_text(
-        f"**Send Skip Message ID or Message Link**\n\nChannel: `{channel_id}`",
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]]
+    try:
+        await callback_query.message.edit_text(
+            f"**Send Skip Message ID or Message Link**\n\nChannel: `{channel_id}`",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]]
+            )
         )
-    )
-
+    except:
+        pass
     INDEX_TASKS[callback_query.from_user.id] = {
         "channel_id": channel_id,
         "state": "await_skip"
     }
-
-    await callback_query.answer()
 
 @Client.on_message(filters.private & filters.user(ADMIN_ID) & filters.text)
 async def receive_skip_number(client: Client, message: Message):
@@ -141,14 +141,13 @@ async def start_indexing(client: Client, user_id: int):
             if msg.empty:
                 deleted += 1
                 continue
-
-            if not msg.video:
-                continue
-
             try:
                 existing = await mdb.async_video_collection.find_one(
                     {"video_id": msg.id}
                 )
+                
+            if not msg.video:
+                continue
 
                 if existing:
                     duplicate += 1
@@ -226,3 +225,4 @@ Total Processed: {count}
         pass
 
     INDEX_TASKS.pop(user_id, None)
+
