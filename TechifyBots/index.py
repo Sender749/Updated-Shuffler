@@ -4,6 +4,7 @@ from Database.maindb import mdb
 from pyrogram.types import Message
 from pyrogram.types import *
 import asyncio, re
+from pyrogram.errors import FloodWait
 
 INDEX_TASKS = {}
 
@@ -14,11 +15,13 @@ async def save_video(client: Client, message: Message):
         file_id = message.video.file_id
         video_duration = message.video.duration
         is_premium = False
-        await mdb.save_video_id(video_id, file_id, video_duration, is_premium)
-     #   text = f"**✅ Saved | ID: {video_id} | ⏱️ {video_duration}s | 💎 {is_premium}**"
-    #    await client.send_message(chat_id=DATABASE_CHANNEL_LOG, text=text)
+        try:
+            await mdb.save_video_id(video_id, file_id, video_duration, is_premium)
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            await mdb.save_video_id(video_id, file_id, video_duration, is_premium)
     except Exception as t:
-        print(f"Error: {str(t)}")
+        print(f"Auto Index Error: {str(t)}")
 
 @Client.on_message(filters.command("index") & filters.private & filters.user(ADMIN_ID))
 async def manual_index_cmd(client: Client, message: Message):
@@ -124,48 +127,54 @@ async def start_indexing(client: Client, user_id: int):
     error = 0
     count = 0
 
-    async for msg in client.get_chat_history(
-            channel_id,
-            offset_id=skip_id,
-            reverse=True
-    ):
+    try:
+        async for msg in client.get_chat_history(
+                channel_id,
+                offset_id=skip_id,
+                reverse=True
+        ):
 
-        if data["cancel"]:
-            INDEX_TASKS.pop(user_id, None)
-            return
+            if data["cancel"]:
+                INDEX_TASKS.pop(user_id, None)
+                return
 
-        if msg.empty:
-            deleted += 1
-            continue
+            if msg.empty:
+                deleted += 1
+                continue
 
-        if not msg.video:
-            continue
+            if not msg.video:
+                continue
 
-        try:
-            existing = await mdb.async_video_collection.find_one(
-                {"video_id": msg.id}
-            )
-
-            if existing:
-                duplicate += 1
-            else:
-                await mdb.save_video_id(
-                    msg.id,
-                    msg.video.file_id,
-                    msg.video.duration,
-                    False
+            try:
+                existing = await mdb.async_video_collection.find_one(
+                    {"video_id": msg.id}
                 )
-                saved += 1
 
-        except Exception:
-            error += 1
+                if existing:
+                    duplicate += 1
+                else:
+                    await mdb.save_video_id(
+                        msg.id,
+                        msg.video.file_id,
+                        msg.video.duration,
+                        False
+                    )
+                    saved += 1
 
-        count += 1
+            except FloodWait as e:
+                await asyncio.sleep(e.value)
+                continue
 
-        # Update progress every 20 files
-        if count % 20 == 0:
-            await progress_msg.edit_text(
-                f"""📂 Indexing In Progress...
+            except Exception:
+                error += 1
+
+            count += 1
+
+            # Progress update every 20 files
+            if count % 20 == 0:
+                try:
+                    await progress_msg.edit_text(
+                        f"""📂 Indexing In Progress...
 
 Processed: {count}
 
@@ -174,11 +183,23 @@ Processed: {count}
 ❌ Deleted/Not Exist: {deleted}
 ⚠️ Errors: {error}
 """
-            )
+                    )
+                except FloodWait as e:
+                    await asyncio.sleep(e.value)
+                except:
+                    pass
 
-    # FINAL COMPLETION MESSAGE (always runs)
-    await progress_msg.edit_text(
-        f"""✅ Indexing Completed!
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        return await start_indexing(client, user_id)
+
+    except Exception as e:
+        print(f"Indexing Fatal Error: {e}")
+
+    # Final message (always executes)
+    try:
+        await progress_msg.edit_text(
+            f"""✅ Indexing Completed!
 
 Total Processed: {count}
 
@@ -187,10 +208,21 @@ Total Processed: {count}
 ❌ Deleted/Not Exist: {deleted}
 ⚠️ Errors: {error}
 """
-    )
+        )
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        await progress_msg.edit_text(
+            f"""✅ Indexing Completed!
+
+Total Processed: {count}
+
+📁 Saved: {saved}
+♻️ Duplicate: {duplicate}
+❌ Deleted/Not Exist: {deleted}
+⚠️ Errors: {error}
+"""
+        )
+    except:
+        pass
 
     INDEX_TASKS.pop(user_id, None)
-
-
-
-
