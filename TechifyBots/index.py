@@ -3,7 +3,7 @@ from vars import *
 from Database.maindb import mdb
 from pyrogram.types import Message
 from pyrogram.types import *
-import asyncio
+import asyncio, re
 
 INDEX_TASKS = {}
 
@@ -124,19 +124,27 @@ async def start_indexing(client: Client, user_id: int):
     error = 0
     count = 0
 
-    async for msg in client.get_chat_history(channel_id, offset_id=skip_id, reverse=True):
+    async for msg in client.get_chat_history(
+            channel_id,
+            offset_id=skip_id,
+            reverse=True
+    ):
+
         if data["cancel"]:
             INDEX_TASKS.pop(user_id, None)
             return
+
+        if msg.empty:
+            deleted += 1
+            continue
 
         if not msg.video:
             continue
 
         try:
-            existing = await mdb.async_video_collection.find_one({"video_id": msg.id})
-            if msg.empty:
-                deleted += 1
-                continue
+            existing = await mdb.async_video_collection.find_one(
+                {"video_id": msg.id}
+            )
 
             if existing:
                 duplicate += 1
@@ -154,9 +162,12 @@ async def start_indexing(client: Client, user_id: int):
 
         count += 1
 
+        # Update progress every 20 files
         if count % 20 == 0:
             await progress_msg.edit_text(
                 f"""📂 Indexing In Progress...
+
+Processed: {count}
 
 ✅ Saved: {saved}
 ♻️ Duplicate: {duplicate}
@@ -165,10 +176,13 @@ async def start_indexing(client: Client, user_id: int):
 """
             )
 
+    # FINAL COMPLETION MESSAGE (always runs)
     await progress_msg.edit_text(
         f"""✅ Indexing Completed!
 
-📁 Total Saved: {saved}
+Total Processed: {count}
+
+📁 Saved: {saved}
 ♻️ Duplicate: {duplicate}
 ❌ Deleted/Not Exist: {deleted}
 ⚠️ Errors: {error}
@@ -176,5 +190,7 @@ async def start_indexing(client: Client, user_id: int):
     )
 
     INDEX_TASKS.pop(user_id, None)
+
+
 
 
