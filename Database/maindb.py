@@ -6,12 +6,11 @@ from itertools import count
 from bot import bot
 from zoneinfo import ZoneInfo
 
-self.cached_limits = None
-self.cached_limits_time = None
-
 class Database:
     def __init__(self):
         self.last_reset_time = datetime.now()
+        self.cached_limits = None
+        self.cached_limits_time = None
         self.async_client = AsyncIOMotorClient(MONGO_URI)
         self.async_db = self.async_client["adultzonebot"]
         self.async_video_collection = self.async_db["videos"]
@@ -20,7 +19,6 @@ class Database:
         self.async_global_limits = self.async_db["global_limits"]
         asyncio.create_task(self.check_and_reset_daily_counts())
         asyncio.create_task(self.check_premium_expire())
-        
 
 # Setlimit code:
     async def get_global_limits(self):
@@ -320,6 +318,7 @@ def format_remaining_time(expiry):
     return f"{days}d {hours}h {minutes}m {seconds}s"
 
 mdb = Database()
+
 
 
 
