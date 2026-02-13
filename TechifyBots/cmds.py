@@ -51,44 +51,34 @@ async def send_video_logic(client: Client, message: Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
 
-    # 1️⃣ Ban check
     if await udb.is_user_banned(user_id):
         await message.reply("**🚫 You are banned from using this bot**")
         return
 
-    # 2️⃣ Maintenance check
     limits = await mdb.get_global_limits()
-    if limits.get('maintenance', False):
+    if limits.get("maintenance", False):
         await message.reply_text("**🛠️ Bot Under Maintenance — Back Soon!**")
         return
 
-    # 3️⃣ Force subscribe
     if IS_FSUB and not await get_fsub(client, message):
         return
 
-    # 4️⃣ Get user plan (single source of truth)
-    user = await mdb.get_user(user_id)
-    plan = user.get("plan", "free")
+    # ✅ Centralized plan + limit check
+    usage = await mdb.check_and_increment_usage(user_id)
 
-    # 5️⃣ Free limit logic
-    if plan == "free":
-        FREE_LIMIT = limits["free_limit"]
-        daily_count = user.get("daily_count", 0)
+    if not usage["allowed"]:
+        await message.reply_text(
+            f"**🚫 You've reached your daily limit of {usage['limit']} videos.\n\nUpgrade to Prime for unlimited access.**"
+        )
+        return
 
-        # Predict next usage BEFORE increment
-        if daily_count + 1 > FREE_LIMIT:
-            await message.reply_text(
-                f"**🚫 You've reached your daily limit of {FREE_LIMIT} videos.\n\nUpgrade to Prime for unlimited access.**"
-            )
-            return
-
-        new_count = await mdb.increment_daily_count(user_id)
-        usage_text = f"📊 Limit: {new_count}/{FREE_LIMIT}"
-
-    else:
+    # Prepare usage text
+    if usage["plan"] == "prime":
         usage_text = "🌟 Prime User: Unlimited Access"
+    else:
+        usage_text = f"📊 Limit: {usage['count']}/{usage['limit']}"
 
-    # 6️⃣ Load videos (cached)
+    # Load videos
     if "all" not in VIDEO_CACHE:
         VIDEO_CACHE["all"] = await mdb.get_all_videos()
 
@@ -98,18 +88,24 @@ async def send_video_logic(client: Client, message: Message):
         await message.reply_text("No videos available.")
         return
 
+    # Prevent repeats
     recent = USER_RECENT_VIDEOS.get(user_id, set())
     available_videos = [v for v in videos if v["video_id"] not in recent]
+
     if not available_videos:
         USER_RECENT_VIDEOS[user_id] = set()
         available_videos = videos
+
     random_video = random.choice(available_videos)
+
     USER_RECENT_VIDEOS.setdefault(user_id, set()).add(random_video["video_id"])
     if len(USER_RECENT_VIDEOS[user_id]) > 10:
         USER_RECENT_VIDEOS[user_id].pop()
-    channel_msg_id = random_video["video_id"]
+
     file_id = random_video.get("file_id")
+    channel_msg_id = random_video["video_id"]
     delete_minutes = DELETE_TIMER // 60
+
     caption_text = (
         f"<b><blockquote>"
         f"⚠️ This video will auto delete in {delete_minutes} minutes."
@@ -146,6 +142,7 @@ async def send_video_logic(client: Client, message: Message):
         print(f"Video send error: {e}")
         await message.reply_text("Failed to load video.")
 
+
 async def auto_delete_video(client: Client, chat_id: int, message_id: int, user_id: int):
     try:
         await asyncio.sleep(DELETE_TIMER)
@@ -160,6 +157,7 @@ async def auto_delete_video(client: Client, chat_id: int, message_id: int, user_
                 await client.send_message(chat_id, "✅ Video deleted successfully.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")]]))
     except Exception as e:
         print(f"Auto delete error: {e}")
+
 
 
 
