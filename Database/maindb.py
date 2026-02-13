@@ -254,12 +254,6 @@ class Database:
     async def count_all_videos(self):
         return await self.async_video_collection.count_documents({})
 
-    async def get_free_videos(self):
-        videos = []
-        async for video in self.async_video_collection.find({"is_premium": False}):
-            videos.append(video)
-        return videos
-
     async def get_user(self, user_id: int):
         user = await self.async_user_collection.find_one({"_id": user_id})
         if not user:
@@ -318,6 +312,7 @@ def format_remaining_time(expiry):
     return f"{days}d {hours}h {minutes}m {seconds}s"
 
 mdb = Database()
+
 
 
 
