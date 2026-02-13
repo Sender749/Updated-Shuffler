@@ -21,15 +21,6 @@ async def my_plan(client, message):
     plan = user.get("plan", "free")
     daily_count = user.get("daily_count", 0)
     prime_expiry = user.get("prime_expiry")
-    
-    # Check if premium has expired
-    if plan == "prime" and prime_expiry:
-        if prime_expiry < datetime.now():
-            await mdb.remove_premium(user_id)
-            user = await mdb.get_user(user_id)
-            plan = "free"
-            daily_count = user.get("daily_count", 0)
-    
     status_text = f""">**Plan Details**
 
 **User:** {message.from_user.mention}
@@ -42,9 +33,6 @@ async def my_plan(client, message):
 **Today Used:** {daily_count}/{FREE_LIMIT}
 **Remaining:** {max(FREE_LIMIT - daily_count, 0)}
 """
-        if daily_count >= FREE_LIMIT:
-            status_text += "\n⚠️ You've reached your daily limit."
-    
     if plan == "prime" and prime_expiry:
         IST = pytz.timezone('Asia/Kolkata')
         if prime_expiry.tzinfo is None:
@@ -127,3 +115,4 @@ async def reset_limits(client, message):
     
     count = await mdb.reset_all_free_limits()
     await message.reply_text(f"**✅ Daily limits have been reset for {count} free users**")
+
