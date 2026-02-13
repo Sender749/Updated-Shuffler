@@ -56,20 +56,46 @@ async def manual_index_cmd(client: Client, message: Message):
 @Client.on_message(filters.private & filters.user(ADMIN_ID) & filters.text)
 async def receive_skip_number(client: Client, message: Message):
 
-    debug_log(f"Received message from admin: {message.text}")
-
     if message.text.startswith("/"):
-        debug_log("Message is command. Ignored.")
         return
 
     data = INDEX_TASKS.get(message.from_user.id)
-    debug_log(f"Current state for user: {data}")
 
     if not data or data.get("state") != "await_skip":
-        debug_log("State not await_skip. Ignored.")
         return
 
-    debug_log("State matched. Proceeding to skip parsing.")
+    channel_id = data["channel_id"]
+    text = message.text.strip()
+
+    # Extract skip ID
+    if "t.me" in text:
+        match = re.search(r"/(\d+)", text)
+        if not match:
+            return await message.reply_text("Invalid link.")
+        skip_id = int(match.group(1))
+    else:
+        if not text.isdigit():
+            return await message.reply_text("Invalid message ID.")
+        skip_id = int(text)
+
+    await message.delete()
+
+    progress_msg = await message.reply_text(
+        "⏳ Starting Indexing...",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]]
+        )
+    )
+
+    INDEX_TASKS[message.from_user.id] = {
+        "channel_id": channel_id,
+        "skip_id": skip_id,
+        "state": "indexing",
+        "cancel": False,
+        "progress_msg": progress_msg
+    }
+
+    asyncio.create_task(start_indexing(client, message.from_user.id))
 
 async def start_indexing(client: Client, user_id: int):
     data = INDEX_TASKS.get(user_id)
@@ -184,6 +210,7 @@ Total Processed: {count}
         pass
 
     INDEX_TASKS.pop(user_id, None)
+
 
 
 
