@@ -82,7 +82,7 @@ async def broadcasting_func(client: Client, message: Message):
                 await to_copy_msg.copy(user_id)
             completed += 1
         except (UserIsBlocked, PeerIdInvalid, InputUserDeactivated):
-            await tb.delete_user(user_id)
+            await udb.unban_user(user_id)
             failed += 1
         except FloodWait as e:
             await asyncio.sleep(e.value)
@@ -200,3 +200,4 @@ async def delete_video_by_id_command(client, message):
         await message.reply_text(f"✅ Deleted video with ID `{video_id}`")
     else:
         await message.reply_text(f"⚠️ Video ID `{video_id}` not found.")
+
