@@ -62,18 +62,19 @@ class Database:
                 "limit": None
             }
         today = datetime.now()
-        user = await self.async_user_collection.find_one_and_update(
-            {"_id": user_id}, [{"$set": {"daily_count": {"$cond": [{"$ne": [{"$dateToString": {"format": "%Y-%m-%d", "date": "$last_request_date"}}, today.strftime("%Y-%m-%d")]}, 1, {"$add": ["$daily_count", 1]}]}, "last_request_date": today}}],
-            return_document=True
-        )
-        new_count = user["daily_count"]
-        if new_count > FREE_LIMIT:
+        last_request = user.get("last_request_date")
+        daily_count = user.get("daily_count", 0)
+        if last_request and last_request.strftime("%Y-%m-%d") != today.strftime("%Y-%m-%d"):
+            daily_count = 0
+        if daily_count >= FREE_LIMIT:
             return {
                 "allowed": False,
                 "plan": "free",
-                "count": new_count - 1,
+                "count": FREE_LIMIT,
                 "limit": FREE_LIMIT
             }
+        new_count = daily_count + 1
+        await self.async_user_collection.update_one({"_id": user_id}, {"$set": {"daily_count": new_count, "last_request_date": today}})
         return {
             "allowed": True,
             "plan": "free",
@@ -312,6 +313,7 @@ def format_remaining_time(expiry):
     return f"{days}d {hours}h {minutes}m {seconds}s"
 
 mdb = Database()
+
 
 
 
