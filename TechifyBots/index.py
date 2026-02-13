@@ -5,6 +5,10 @@ from pyrogram.types import Message
 from pyrogram.types import *
 import asyncio, re
 from pyrogram.errors import FloodWait
+import time
+
+def debug_log(text):
+    print(f"[INDEX DEBUG {time.strftime('%H:%M:%S')}] {text}")
 
 INDEX_TASKS = {}
 
@@ -25,28 +29,42 @@ async def save_video(client: Client, message: Message):
 
 @Client.on_message(filters.command("index") & filters.private & filters.user(ADMIN_ID))
 async def manual_index_cmd(client: Client, message: Message):
+    debug_log(f"/index triggered by {message.from_user.id}")
+
     channels = DATABASE_CHANNEL_ID
     if not isinstance(channels, list):
         channels = [channels]
+
     buttons = []
     for ch in channels:
         try:
             chat = await client.get_chat(ch)
+            debug_log(f"Adding button for channel: {ch}")
             buttons.append(
                 [InlineKeyboardButton(chat.title, callback_data=f"index_select_{ch}")]
             )
-        except:
-            continue
+        except Exception as e:
+            debug_log(f"Error getting chat {ch}: {e}")
+
     buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")])
+
     await message.reply_text(
         "**Select Channel To Index:**",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
+
 @Client.on_callback_query(filters.regex("^index_select_"))
 async def index_channel_selected(client: Client, callback_query: CallbackQuery):
-    await callback_query.answer()   
+
+    debug_log(f"Callback received: {callback_query.data}")
+    debug_log(f"User ID: {callback_query.from_user.id}")
+
+    await callback_query.answer()
+
     channel_id = int(callback_query.data.split("_")[-1])
+    debug_log(f"Parsed channel_id: {channel_id}")
+
     try:
         await callback_query.message.edit_text(
             f"**Send Skip Message ID or Message Link**\n\nChannel: `{channel_id}`",
@@ -54,52 +72,35 @@ async def index_channel_selected(client: Client, callback_query: CallbackQuery):
                 [[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]]
             )
         )
-    except:
-        pass
+        debug_log("Message edited successfully.")
+    except Exception as e:
+        debug_log(f"Edit failed: {e}")
+
     INDEX_TASKS[callback_query.from_user.id] = {
         "channel_id": channel_id,
         "state": "await_skip"
     }
 
+    debug_log(f"State stored: {INDEX_TASKS.get(callback_query.from_user.id)}")
+
+
 @Client.on_message(filters.private & filters.user(ADMIN_ID) & filters.text)
 async def receive_skip_number(client: Client, message: Message):
+
+    debug_log(f"Received message from admin: {message.text}")
+
     if message.text.startswith("/"):
+        debug_log("Message is command. Ignored.")
         return
+
     data = INDEX_TASKS.get(message.from_user.id)
+    debug_log(f"Current state for user: {data}")
 
     if not data or data.get("state") != "await_skip":
+        debug_log("State not await_skip. Ignored.")
         return
 
-    channel_id = data["channel_id"]
-
-    text = message.text.strip()
-
-    if "t.me" in text:
-        match = re.search(r"/(\d+)", text)
-        if not match:
-            return await message.reply_text("Invalid link.")
-        skip_id = int(match.group(1))
-    else:
-        if not text.isdigit():
-            return await message.reply_text("Invalid message ID.")
-        skip_id = int(text)
-    await message.delete()
-    progress_msg = await message.reply_text(
-        "⏳ Starting Indexing...",
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]]
-        )
-    )
-
-    INDEX_TASKS[message.from_user.id] = {
-        "channel_id": channel_id,
-        "skip_id": skip_id,
-        "state": "indexing",
-        "cancel": False,
-        "progress_msg": progress_msg
-    }
-
-    asyncio.create_task(start_indexing(client, message.from_user.id))
+    debug_log("State matched. Proceeding to skip parsing.")
 
 @Client.on_callback_query(filters.regex("^index_cancel$"))
 async def cancel_indexing(client: Client, callback_query: CallbackQuery):
@@ -226,5 +227,6 @@ Total Processed: {count}
         pass
 
     INDEX_TASKS.pop(user_id, None)
+
 
 
