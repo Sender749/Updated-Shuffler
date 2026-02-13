@@ -11,30 +11,6 @@ from Script import text
 VIDEO_CACHE = {}
 USER_ACTIVE_VIDEOS = {}
 
-async def get_usage_text(user_id: int) -> str:
-    """Get consistent usage text for user based on their plan"""
-    user = await mdb.get_user(user_id)
-    plan = user.get("plan", "free")
-    
-    if plan == "prime":
-        # Check if premium has expired
-        prime_expiry = user.get("prime_expiry")
-        if prime_expiry and prime_expiry < datetime.now():
-            # Premium expired, show free limit
-            await mdb.remove_premium(user_id)
-            user = await mdb.get_user(user_id)
-            plan = "free"
-        else:
-            return "🌟 Prime User: Unlimited Access"
-    
-    if plan == "free":
-        limits = await mdb.get_global_limits()
-        FREE_LIMIT = limits["free_limit"]
-        daily_count = user.get("daily_count", 0)
-        return f"📊 Limit: {daily_count}/{FREE_LIMIT}"
-    
-    return "📊 Limit: 0/0"
-
 @Client.on_message(filters.command("start") & filters.private)
 async def start_command(client, message):
     if await udb.is_user_banned(message.from_user.id):
@@ -74,60 +50,44 @@ async def send_video_logic(client: Client, message: Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
 
-    # Ban check
+    # 1️⃣ Ban check
     if await udb.is_user_banned(user_id):
         await message.reply("**🚫 You are banned from using this bot**")
         return
 
-    # Maintenance check
+    # 2️⃣ Maintenance check
     limits = await mdb.get_global_limits()
     if limits.get('maintenance', False):
         await message.reply_text("**🛠️ Bot Under Maintenance — Back Soon!**")
         return
 
-    # Force sub
+    # 3️⃣ Force subscribe
     if IS_FSUB and not await get_fsub(client, message):
         return
 
-    # Always fetch latest user
+    # 4️⃣ Get user plan (single source of truth)
     user = await mdb.get_user(user_id)
     plan = user.get("plan", "free")
 
-    # --- STRICT PREMIUM VALIDATION ---
-    if plan == "prime":
-        prime_expiry = user.get("prime_expiry")
-
-        if not prime_expiry:
-            # corrupted data → revert safely
-            await mdb.remove_premium(user_id)
-            user = await mdb.get_user(user_id)
-            plan = "free"
-        else:
-            if prime_expiry <= datetime.now():
-                await mdb.remove_premium(user_id)
-                user = await mdb.get_user(user_id)
-                plan = "free"
-
-    # --- LIMIT CHECK AND INCREMENT ---
+    # 5️⃣ Free limit logic
     if plan == "free":
         FREE_LIMIT = limits["free_limit"]
         daily_count = user.get("daily_count", 0)
 
-        if daily_count >= FREE_LIMIT:
+        # Predict next usage BEFORE increment
+        if daily_count + 1 > FREE_LIMIT:
             await message.reply_text(
                 f"**🚫 You've reached your daily limit of {FREE_LIMIT} videos.\n\nUpgrade to Prime for unlimited access.**"
             )
             return
 
-        # Increment limit for free users only
         new_count = await mdb.increment_daily_count(user_id)
         usage_text = f"📊 Limit: {new_count}/{FREE_LIMIT}"
 
     else:
-        # Prime users - no limit increment
         usage_text = "🌟 Prime User: Unlimited Access"
 
-    # --- Load videos ---
+    # 6️⃣ Load videos (cached)
     if "all" not in VIDEO_CACHE:
         VIDEO_CACHE["all"] = await mdb.get_all_videos()
 
@@ -181,9 +141,8 @@ async def send_video_logic(client: Client, message: Message):
         asyncio.create_task(auto_delete_video(client, chat_id, sent_message.id, user_id))
 
     except Exception as e:
-        print(f"Edit error: {e}")
+        print(f"Video send error: {e}")
         await message.reply_text("Failed to load video.")
-
 
 async def auto_delete_video(client: Client, chat_id: int, message_id: int, user_id: int):
     try:
@@ -199,4 +158,5 @@ async def auto_delete_video(client: Client, chat_id: int, message_id: int, user_
                 await client.send_message(chat_id, "✅ Video deleted successfully.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")]]))
     except Exception as e:
         print(f"Auto delete error: {e}")
+
 
