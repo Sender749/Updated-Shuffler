@@ -10,6 +10,7 @@ from Script import text
 
 VIDEO_CACHE = {}
 USER_ACTIVE_VIDEOS = {}
+USER_RECENT_VIDEOS = {}
 
 @Client.on_message(filters.command("start") & filters.private)
 async def start_command(client, message):
@@ -97,17 +98,18 @@ async def send_video_logic(client: Client, message: Message):
         await message.reply_text("No videos available.")
         return
 
-    random_video = random.choice(videos)
+    recent = USER_RECENT_VIDEOS.get(user_id, set())
+    available_videos = [v for v in videos if v["video_id"] not in recent]
+    if not available_videos:
+        USER_RECENT_VIDEOS[user_id] = set()
+        available_videos = videos
+    random_video = random.choice(available_videos)
+    USER_RECENT_VIDEOS.setdefault(user_id, set()).add(random_video["video_id"])
+    if len(USER_RECENT_VIDEOS[user_id]) > 10:
+        USER_RECENT_VIDEOS[user_id].pop()
     channel_msg_id = random_video["video_id"]
-
-    original_msg = await client.get_messages(DATABASE_CHANNEL_ID, channel_msg_id)
-    if not original_msg.video:
-        await message.reply_text("Invalid video data.")
-        return
-
-    file_id = original_msg.video.file_id
+    file_id = random_video.get("file_id")
     delete_minutes = DELETE_TIMER // 60
-
     caption_text = (
         f"<b><blockquote>"
         f"⚠️ This video will auto delete in {delete_minutes} minutes."
@@ -158,5 +160,6 @@ async def auto_delete_video(client: Client, chat_id: int, message_id: int, user_
                 await client.send_message(chat_id, "✅ Video deleted successfully.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")]]))
     except Exception as e:
         print(f"Auto delete error: {e}")
+
 
 
