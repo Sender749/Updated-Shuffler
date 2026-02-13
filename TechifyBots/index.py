@@ -3,6 +3,7 @@ from vars import *
 from Database.maindb import mdb
 from pyrogram.types import Message
 from pyrogram.types import *
+import asyncio
 
 INDEX_TASKS = {}
 
@@ -165,3 +166,4 @@ async def start_indexing(client: Client, user_id: int):
     )
 
     INDEX_TASKS.pop(user_id, None)
+
