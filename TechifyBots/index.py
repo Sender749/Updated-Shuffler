@@ -103,14 +103,15 @@ async def receive_skip_number(client: Client, message: Message):
 
 @Client.on_callback_query(filters.regex("^index_cancel$"))
 async def cancel_indexing(client: Client, callback_query: CallbackQuery):
+    await callback_query.answer()
     user_id = callback_query.from_user.id
     task = INDEX_TASKS.get(user_id)
-
     if task:
         task["cancel"] = True
-
-    await callback_query.message.edit_text("❌ Indexing Cancelled.")
-    await callback_query.answer()
+    try:
+        await callback_query.message.edit_text("❌ Indexing Cancelled.")
+    except:
+        pass
 
 async def start_indexing(client: Client, user_id: int):
     data = INDEX_TASKS.get(user_id)
@@ -141,14 +142,14 @@ async def start_indexing(client: Client, user_id: int):
             if msg.empty:
                 deleted += 1
                 continue
+   
+            if not msg.video:
+                continue
+
             try:
                 existing = await mdb.async_video_collection.find_one(
                     {"video_id": msg.id}
                 )
-                
-            if not msg.video:
-                continue
-
                 if existing:
                     duplicate += 1
                 else:
@@ -225,4 +226,5 @@ Total Processed: {count}
         pass
 
     INDEX_TASKS.pop(user_id, None)
+
 
