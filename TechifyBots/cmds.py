@@ -108,7 +108,7 @@ async def send_video_logic(client: Client, message: Message):
                 user = await mdb.get_user(user_id)
                 plan = "free"
 
-    # --- FREE LIMIT CHECK ---
+    # --- LIMIT CHECK AND INCREMENT ---
     if plan == "free":
         FREE_LIMIT = limits["free_limit"]
         daily_count = user.get("daily_count", 0)
@@ -119,11 +119,12 @@ async def send_video_logic(client: Client, message: Message):
             )
             return
 
-        # increment for free user only
+        # Increment limit for free users only
         new_count = await mdb.increment_daily_count(user_id)
         usage_text = f"📊 Limit: {new_count}/{FREE_LIMIT}"
 
     else:
+        # Prime users - no limit increment
         usage_text = "🌟 Prime User: Unlimited Access"
 
     # --- Load videos ---
