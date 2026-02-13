@@ -6,6 +6,9 @@ from itertools import count
 from bot import bot
 from zoneinfo import ZoneInfo
 
+self.cached_limits = None
+self.cached_limits_time = None
+
 class Database:
     def __init__(self):
         self.last_reset_time = datetime.now()
@@ -21,12 +24,17 @@ class Database:
 
 # Setlimit code:
     async def get_global_limits(self):
+        now = datetime.now()
+        if self.cached_limits and (now - self.cached_limits_time).seconds < 60:
+            return self.cached_limits
         default_limits = {
             'free_limit': FREE_LIMIT,
             'maintenance': False
         }
         db_limits = await self.async_global_limits.find_one({}) or {}
-        return {**default_limits, **db_limits}
+        self.cached_limits = {**default_limits, **db_limits}
+        self.cached_limits_time = now
+        return self.cached_limits
 
     async def initialize_global_limits(self):
         if not await self.async_global_limits.find_one({}):
@@ -36,16 +44,13 @@ class Database:
             })
 
     async def increment_daily_count(self, user_id: int):
-        user = await self.get_user(user_id)
         today = datetime.now()
-        if user.get("last_request_date") is None or user.get("last_request_date").date() != today.date():
-            await self.update_user(user_id, {"daily_count": 1, "last_request_date": today})
-            return 1
-        else:
-            new_count = user.get("daily_count", 0) + 1
-            await self.update_user(user_id, {"daily_count": new_count})
-            return new_count
-        
+        result = await self.async_user_collection.find_one_and_update(
+            {"_id": user_id}, [{"$set": {"daily_count": {"$cond": [{"$ne": [{"$dateToString": {"format": "%Y-%m-%d", "date": "$last_request_date"}}, today.strftime("%Y-%m-%d")]}, 1, {"$add": ["$daily_count", 1]}]}, "last_request_date": today}}],
+            return_document=True
+        )
+        return result["daily_count"]
+  
     async def update_global_limit(self, limit_type, new_value):
         if limit_type == "free":
             await self.async_user_collection.update_many({"plan": "free"}, {"$set": {"daily_limit": new_value}})
@@ -283,4 +288,5 @@ def format_remaining_time(expiry):
     return f"{days}d {hours}h {minutes}m {seconds}s"
 
 mdb = Database()
+
 
