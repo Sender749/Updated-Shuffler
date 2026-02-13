@@ -50,6 +50,38 @@ class Database:
             return_document=True
         )
         return result["daily_count"]
+
+    async def check_and_increment_usage(self, user_id: int):
+        limits = await self.get_global_limits()
+        FREE_LIMIT = limits["free_limit"]
+        user = await self.get_user(user_id)
+        plan = user.get("plan", "free")
+        if plan == "prime":
+            return {
+                "allowed": True,
+                "plan": "prime",
+                "count": None,
+                "limit": None
+            }
+        today = datetime.now()
+        user = await self.async_user_collection.find_one_and_update(
+            {"_id": user_id}, [{"$set": {"daily_count": {"$cond": [{"$ne": [{"$dateToString": {"format": "%Y-%m-%d", "date": "$last_request_date"}}, today.strftime("%Y-%m-%d")]}, 1, {"$add": ["$daily_count", 1]}]}, "last_request_date": today}}],
+            return_document=True
+        )
+        new_count = user["daily_count"]
+        if new_count > FREE_LIMIT:
+            return {
+                "allowed": False,
+                "plan": "free",
+                "count": new_count - 1,
+                "limit": FREE_LIMIT
+            }
+        return {
+            "allowed": True,
+            "plan": "free",
+            "count": new_count,
+            "limit": FREE_LIMIT
+        }
   
     async def update_global_limit(self, limit_type, new_value):
         if limit_type == "free":
@@ -288,5 +320,6 @@ def format_remaining_time(expiry):
     return f"{days}d {hours}h {minutes}m {seconds}s"
 
 mdb = Database()
+
 
 
