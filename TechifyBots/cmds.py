@@ -46,7 +46,7 @@ async def start_command(client, message):
 async def send_random_video(client: Client, message: Message):
     await send_video_logic(client, message)
 
-async def send_video_logic(lient: Client, message: Message, user_id: int = None)):
+async def send_video_logic(client: Client, message: Message, user_id: int = None):
     if user_id is None:
         user_id = message.from_user.id
     chat_id = message.chat.id
@@ -157,6 +157,7 @@ async def auto_delete_video(client: Client, chat_id: int, message_id: int, user_
                 await client.send_message(chat_id, "✅ Video deleted successfully.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")]]))
     except Exception as e:
         print(f"Auto delete error: {e}")
+
 
 
 
