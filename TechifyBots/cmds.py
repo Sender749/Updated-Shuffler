@@ -134,12 +134,6 @@ async def send_video_logic(client: Client, message: Message, user_id: int = None
     
     # If user is prime, skip verification and limit checks
     if is_prime:
-        usage = await mdb.check_and_increment_usage(user_id)
-        if not usage["allowed"]:
-            await message.reply_text(
-                f"**🚫 You've reached your daily limit of {usage['limit']} videos.\n\nUpgrade to Prime for unlimited access.**"
-            )
-            return
         usage_text = "🌟 Prime User: Unlimited Access"
     else:
         # For free users, check verification first
@@ -192,17 +186,21 @@ async def send_video_logic(client: Client, message: Message, user_id: int = None
                 except:
                     pass
                 return
+            
+            # ✅ User is VERIFIED - Give unlimited access
+            usage_text = "✅ Verified: Unlimited Access"
         
-        # Check usage limit for free users who are verified
-        usage = await mdb.check_and_increment_usage(user_id)
-        
-        if not usage["allowed"]:
-            await message.reply_text(
-                f"**🚫 You've reached your daily limit of {usage['limit']} videos.\n\nUpgrade to Prime for unlimited access or verify to get unlimited videos for today.**"
-            )
-            return
-        
-        usage_text = f"📊 Limit: {usage['count']}/{usage['limit']}"
+        else:
+            # Verification is disabled, check usage limit normally
+            usage = await mdb.check_and_increment_usage(user_id)
+            
+            if not usage["allowed"]:
+                await message.reply_text(
+                    f"**🚫 You've reached your daily limit of {usage['limit']} videos.\n\nUpgrade to Prime for unlimited access.**"
+                )
+                return
+            
+            usage_text = f"📊 Limit: {usage['count']}/{usage['limit']}"
 
     # Load videos
     if "all" not in VIDEO_CACHE:
@@ -283,11 +281,3 @@ async def auto_delete_video(client: Client, chat_id: int, message_id: int, user_
                 await client.send_message(chat_id, "✅ Video deleted successfully.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")]]))
     except Exception as e:
         print(f"Auto delete error: {e}")
-
-
-
-
-
-
-
-
