@@ -176,11 +176,10 @@ async def start_indexing(client: Client, user_id: int):
     error = 0
     count = 0
 
-    # 🔹 Get latest message ID (REAL STOP LIMIT)
+    # ✅ BOT SAFE — Get latest message ID
     try:
-        async for m in client.get_chat_history(channel_id, limit=1):
-            latest_id = m.id
-            break
+        chat = await client.get_chat(channel_id)
+        latest_id = chat.last_message_id
     except Exception as e:
         print(f"[INDEX DEBUG] Failed to get latest message: {e}")
         return
@@ -223,11 +222,11 @@ async def start_indexing(client: Client, user_id: int):
         count += 1
         current_id += 1
 
-        # 🔹 Keep bot responsive
+        # Keep bot responsive
         if count % 50 == 0:
             await asyncio.sleep(0)
 
-        # 🔹 Update progress every 20 messages
+        # Update progress every 20
         if count % 20 == 0:
             try:
                 await progress_msg.edit_text(
@@ -247,7 +246,7 @@ Processed: {count}
             except:
                 pass
 
-    # 🔹 Final completion message
+    # Final message
     try:
         await progress_msg.edit_text(
             f"""✅ Indexing Completed!
