@@ -10,292 +10,291 @@ from Script import text
 from .utils import get_shortlink, get_readable_time
 from bot import bot
 
-# ==================== PERFORMANCE CACHES ====================
 VIDEO_CACHE = {}
 USER_ACTIVE_VIDEOS = {}
 USER_RECENT_VIDEOS = {}
 TEMP_CHAT = {}
 
-# User data cache - 60 second TTL
-USER_DATA_CACHE = {}
-USER_CACHE_TTL = 60
-
-# Bot info cache - permanent
-BOT_INFO_CACHE = None
-
-# Verification cache - 30 second TTL
-VERIFICATION_CACHE = {}
-VERIFICATION_CACHE_TTL = 30
-
-# ==================== CACHE HELPERS ====================
-
-async def get_cached_user_data(user_id: int):
-    """Get user with 60s cache"""
-    now = datetime.now().timestamp()
-    if user_id in USER_DATA_CACHE:
-        data, ts = USER_DATA_CACHE[user_id]
-        if now - ts < USER_CACHE_TTL:
-            return data
-    user = await mdb.get_user(user_id)
-    USER_DATA_CACHE[user_id] = (user, now)
-    return user
-
-async def get_cached_verification(user_id: int):
-    """Get verification with 30s cache"""
-    now = datetime.now().timestamp()
-    if user_id in VERIFICATION_CACHE:
-        status, ts = VERIFICATION_CACHE[user_id]
-        if now - ts < VERIFICATION_CACHE_TTL:
-            return status
-    verified = await udb.is_user_verified(user_id)
-    second = await udb.use_second_shortener(user_id, TWO_VERIFY_GAP)
-    third = await udb.use_third_shortener(user_id, THREE_VERIFY_GAP)
-    status = (verified, second, third)
-    VERIFICATION_CACHE[user_id] = (status, now)
-    return status
-
-def clear_user_cache(user_id: int):
-    """Clear cache after updates"""
-    USER_DATA_CACHE.pop(user_id, None)
-    VERIFICATION_CACHE.pop(user_id, None)
-
-async def get_bot_info(client):
-    """Get bot info (cached permanently)"""
-    global BOT_INFO_CACHE
-    if not BOT_INFO_CACHE:
-        BOT_INFO_CACHE = await client.get_me()
-    return BOT_INFO_CACHE
-
-# ==================== START COMMAND ====================
-
 @Client.on_message(filters.command("start") & filters.private)
 async def start_command(client, message):
-    uid = message.from_user.id
-    
-    if await udb.is_user_banned(uid):
-        await message.reply("**🚫 You are banned from using this bot**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support", url=f"https://t.me/{ADMIN_USERNAME}")]]))
+    if await udb.is_user_banned(message.from_user.id):
+        await message.reply("**🚫 You are banned from using this bot**",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support 🧑‍💻", url=f"https://t.me/{ADMIN_USERNAME}")]]))
         return
     
     # Handle verification callback
     if len(message.command) > 1:
         data = message.command[1]
         if data.startswith("verify_"):
-            await handle_verify(client, message, data)
-            return
+            parts = data.split("_")
+            if len(parts) >= 4:
+                _, user_id, verify_id, video_id = parts[0], int(parts[1]), parts[2], parts[3]
+                
+                # Verify the token
+                verify_info = await udb.get_verify_id_info(user_id, verify_id)
+                
+                if not verify_info or verify_info.get("verified"):
+                    await message.reply("<b>ʟɪɴᴋ ᴇxᴘɪʀᴇᴅ ᴛʀʏ ᴀɢᴀɪɴ...</b>")
+                    return
+                
+                ist_timezone = pytz.timezone('Asia/Kolkata')
+                
+                # Determine which verification stage
+                is_second = await udb.use_second_shortener(user_id, TWO_VERIFY_GAP)
+                is_third = await udb.user_verified(user_id)
+                
+                if is_third:
+                    key = "third_time_verified"
+                    verify_num = 3
+                    msg = text.THIRDT_VERIFY_COMPLETE_TEXT
+                elif is_second:
+                    key = "second_time_verified"
+                    verify_num = 2
+                    msg = text.SECOND_VERIFY_COMPLETE_TEXT
+                else:
+                    key = "last_verified"
+                    verify_num = 1
+                    msg = text.VERIFY_COMPLETE_TEXT
+                
+                current_time = datetime.now(tz=ist_timezone)
+                
+                # Update verification time
+                await udb.update_verify_user(user_id, {key: current_time})
+                await udb.update_verify_id_info(user_id, verify_id, {"verified": True})
+                
+                # Log verification
+                await client.send_message(
+                    LOG_VR_CHANNEL,
+                    text.VERIFIED_LOG_TEXT.format(
+                        message.from_user.mention,
+                        user_id,
+                        current_time.strftime('%d %B %Y'),
+                        verify_num
+                    )
+                )
+                
+                # Send success message
+                await message.reply_photo(
+                    photo=VERIFY_IMG,
+                    caption=msg.format(message.from_user.mention, get_readable_time(TWO_VERIFY_GAP)),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🎬 Get Video Now", callback_data="getvideo")
+                    ]])
+                )
+                return
     
-    # Parallel checks
-    fsub = get_fsub(client, message) if IS_FSUB else None
-    user_check = udb.get_user(uid)
-    
-    if IS_FSUB and not await fsub:
-        return
-    
-    # Register new user async
-    if not await user_check:
-        asyncio.create_task(register_user(client, message))
-    
-    # Instant welcome
+    if IS_FSUB and not await get_fsub(client, message):return
+    if await udb.get_user(message.from_user.id) is None:
+        await udb.addUser(message.from_user.id, message.from_user.first_name)
+        bot_obj = await client.get_me()
+        await client.send_message(
+            LOG_CHNL,
+            text.LOG.format(
+                message.from_user.id,
+                getattr(message.from_user, "dc_id", "N/A"),
+                message.from_user.first_name or "N/A",
+                f"@{message.from_user.username}" if message.from_user.username else "N/A",
+                bot_obj.username
+            )
+        )
     await message.reply_photo(
         photo=random.choice(PICS),
         caption=text.START.format(message.from_user.mention),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🎬 Get Video", callback_data="getvideo")],
-            [InlineKeyboardButton("🍿 Premium", callback_data="pro")],
-            [InlineKeyboardButton("ℹ️ About", callback_data="about"), InlineKeyboardButton("📚 Help", callback_data="help")]
+            [InlineKeyboardButton("🍿 𝖡𝗎𝗒 𝖲𝗎𝖻𝗌𝖼𝗋𝗂𝗉𝗍𝗂𝗈𝗇 🍾", callback_data="pro")],
+            [InlineKeyboardButton("ℹ️ 𝖠𝖻𝗈𝗎𝗍", callback_data="about"),
+             InlineKeyboardButton("📚 𝖧𝖾𝗅𝗉", callback_data="help")] 
         ])
     )
 
-async def handle_verify(client, message, data):
-    """Handle verification"""
-    parts = data.split("_")
-    if len(parts) < 4:
-        return
-    _, uid, vid, _ = parts[0], int(parts[1]), parts[2], parts[3]
-    
-    verify_info = await udb.get_verify_id_info(uid, vid)
-    if not verify_info or verify_info.get("verified"):
-        await message.reply("<b>Link expired</b>")
-        return
-    
-    ist = pytz.timezone('Asia/Kolkata')
-    is_second = await udb.use_second_shortener(uid, TWO_VERIFY_GAP)
-    is_third = await udb.user_verified(uid)
-    
-    if is_third:
-        key, num, msg = "third_time_verified", 3, text.THIRDT_VERIFY_COMPLETE_TEXT
-    elif is_second:
-        key, num, msg = "second_time_verified", 2, text.SECOND_VERIFY_COMPLETE_TEXT
-    else:
-        key, num, msg = "last_verified", 1, text.VERIFY_COMPLETE_TEXT
-    
-    now = datetime.now(tz=ist)
-    await asyncio.gather(
-        udb.update_verify_user(uid, {key: now}),
-        udb.update_verify_id_info(uid, vid, {"verified": True})
-    )
-    
-    clear_user_cache(uid)
-    
-    asyncio.create_task(client.send_message(LOG_VR_CHANNEL, text.VERIFIED_LOG_TEXT.format(message.from_user.mention, uid, now.strftime('%d %B %Y'), num)))
-    
-    await message.reply_photo(
-        photo=VERIFY_IMG,
-        caption=msg.format(message.from_user.mention, get_readable_time(TWO_VERIFY_GAP)),
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get Video", callback_data="getvideo")]])
-    )
-
-async def register_user(client, message):
-    """Register user async"""
-    await udb.addUser(message.from_user.id, message.from_user.first_name)
-    bot_info = await get_bot_info(client)
-    await client.send_message(LOG_CHNL, text.LOG.format(
-        message.from_user.id,
-        getattr(message.from_user, "dc_id", "N/A"),
-        message.from_user.first_name or "N/A",
-        f"@{message.from_user.username}" if message.from_user.username else "N/A",
-        bot_info.username
-    ))
-
-# ==================== VIDEO SENDING ====================
-
 @Client.on_message(filters.command("getvideos") & filters.private)
-async def get_video_cmd(client, message):
-    await send_video(client, message)
+async def send_random_video(client: Client, message: Message):
+    await send_video_logic(client, message)
 
-async def send_video(client, message, uid=None):
-    """Optimized video sending"""
-    uid = uid or message.from_user.id
-    cid = message.chat.id
-    
-    # Parallel checks
-    banned, limits, user = await asyncio.gather(
-        udb.is_user_banned(uid),
-        mdb.get_global_limits(),
-        get_cached_user_data(uid)
-    )
-    
-    if banned:
+async def send_video_logic(client: Client, message: Message, user_id: int = None):
+    if user_id is None:
+        user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    if await udb.is_user_banned(user_id):
         await message.reply("**🚫 You are banned from using this bot**")
         return
-    
-    if limits.get("maintenance"):
+
+    limits = await mdb.get_global_limits()
+    if limits.get("maintenance", False):
         await message.reply_text("**🛠️ Bot Under Maintenance — Back Soon!**")
         return
-    
+
     if IS_FSUB and not await get_fsub(client, message):
         return
+
+    # Get user plan
+    user = await mdb.get_user(user_id)
+    is_prime = user.get("plan", "free") == "prime"
     
-    # Check user status
-    is_prime = user.get("plan") == "prime"
-    
+    # If user is prime, skip verification and limit checks
     if is_prime:
-        usage_text = "🌟 Prime"
+        usage_text = "🌟 Prime User: Unlimited Access"
     else:
+        # For free users, check verification first
         if IS_VERIFY:
-            verified, is_second, is_third = await get_cached_verification(uid)
+            user_verified = await udb.is_user_verified(user_id)
+            is_second_shortener = await udb.use_second_shortener(user_id, TWO_VERIFY_GAP)
+            is_third_shortener = await udb.use_third_shortener(user_id, THREE_VERIFY_GAP)
             
-            if verified and not is_second and not is_third:
-                usage_text = "✅ Verified"
+            # If user is verified, give unlimited access
+            if user_verified and not is_second_shortener and not is_third_shortener:
+                # ✅ User is VERIFIED - Give unlimited access
+                usage_text = "✅ Verified: Unlimited Access"
             else:
-                usage = await mdb.check_and_increment_usage(uid)
+                # User NOT verified or verification expired
+                # Check if they still have free limit
+                usage = await mdb.check_and_increment_usage(user_id)
+                
                 if usage["allowed"]:
-                    usage_text = f"📊 {usage['count']}/{usage['limit']}"
+                    # Still have free videos remaining
+                    usage_text = f"📊 Limit: {usage['count']}/{usage['limit']}"
                 else:
-                    await show_verify(client, message, uid, is_second, is_third)
+                    # Free limit exhausted - Show verification
+                    # Create verification ID
+                    verify_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=7))
+                    await udb.create_verify_id(user_id, verify_id)
+                    
+                    # Store user_id for later use
+                    TEMP_CHAT[user_id] = chat_id
+                    
+                    # Get appropriate shortlink
+                    bot_info = await client.get_me()
+                    verify_link = f"https://telegram.me/{bot_info.username}?start=verify_{user_id}_{verify_id}_video"
+                    short_link = await get_shortlink(verify_link, is_second_shortener, is_third_shortener)
+                    
+                    # Select appropriate tutorial based on verification stage
+                    if is_third_shortener:
+                        tutorial_link = TUTORIAL3
+                        msg_text = text.THIRDT_VERIFICATION_TEXT
+                    elif is_second_shortener:
+                        tutorial_link = TUTORIAL2
+                        msg_text = text.SECOND_VERIFICATION_TEXT
+                    else:
+                        tutorial_link = TUTORIAL
+                        msg_text = text.VERIFICATION_TEXT
+                    
+                    buttons = [
+                        [InlineKeyboardButton(text="♻️ ᴠᴇʀɪғʏ ♻️", url=short_link)],
+                        [InlineKeyboardButton(text="❗️ ʜᴏᴡ ᴛᴏ ᴠᴇʀɪғʏ ❓", url=tutorial_link)]
+                    ]
+                    
+                    # Send verification message
+                    sent = await message.reply_photo(
+                        photo=VERIFY_IMG,
+                        caption=msg_text.format(message.from_user.mention, "User", get_readable_time(TWO_VERIFY_GAP)),
+                        reply_markup=InlineKeyboardMarkup(buttons)
+                    )
+                    
+                    # Auto-delete verification message after 5 minutes
+                    await asyncio.sleep(300)
+                    try:
+                        await sent.delete()
+                    except:
+                        pass
                     return
+        
         else:
-            usage = await mdb.check_and_increment_usage(uid)
+            # Verification is disabled, check usage limit normally
+            usage = await mdb.check_and_increment_usage(user_id)
+            
             if not usage["allowed"]:
-                await message.reply_text(f"**🚫 Limit reached ({usage['limit']})\n\nUpgrade to Prime!**")
+                await message.reply_text(
+                    f"**🚫 You've reached your daily limit of {usage['limit']} videos.\n\nUpgrade to Prime for unlimited access.**"
+                )
                 return
-            usage_text = f"📊 {usage['count']}/{usage['limit']}"
-    
-    # Get video
+            
+            usage_text = f"📊 Limit: {usage['count']}/{usage['limit']}"
+
+    # Load videos
     if "all" not in VIDEO_CACHE:
         VIDEO_CACHE["all"] = await mdb.get_all_videos()
-    
+
     videos = VIDEO_CACHE["all"]
+
     if not videos:
-        await message.reply_text("No videos")
+        await message.reply_text("No videos available.")
         return
-    
-    recent = USER_RECENT_VIDEOS.get(uid, set())
-    available = [v for v in videos if v["video_id"] not in recent] or videos
-    
-    if not available:
-        USER_RECENT_VIDEOS[uid] = set()
-        available = videos
-    
-    video = random.choice(available)
-    USER_RECENT_VIDEOS.setdefault(uid, set()).add(video["video_id"])
-    if len(USER_RECENT_VIDEOS[uid]) > 10:
-        USER_RECENT_VIDEOS[uid].pop()
-    
-    # Send video
-    file_id = video["file_id"]
-    mins = DELETE_TIMER // 60
-    caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}</b>"
-    
+
+    # Prevent repeats
+    recent = USER_RECENT_VIDEOS.get(user_id, set())
+    available_videos = [v for v in videos if v["video_id"] not in recent]
+
+    if not available_videos:
+        USER_RECENT_VIDEOS[user_id] = set()
+        available_videos = videos
+
+    random_video = random.choice(available_videos)
+
+    USER_RECENT_VIDEOS.setdefault(user_id, set()).add(random_video["video_id"])
+    if len(USER_RECENT_VIDEOS[user_id]) > 10:
+        USER_RECENT_VIDEOS[user_id].pop()
+
+    file_id = random_video.get("file_id")
+    channel_msg_id = random_video["video_id"]
+    delete_minutes = DELETE_TIMER // 60
+
+    caption_text = (
+        f"<b><blockquote>"
+        f"⚠️ This video will auto delete in {delete_minutes} minutes."
+        f"</blockquote>\n\n"
+        f"🆔 File ID: <code>{channel_msg_id}</code>\n"
+        f"{usage_text}"
+        f"</b>"
+    )
+
     try:
         if message.video:
-            await message.edit_media(InputMediaVideo(media=file_id, caption=caption), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Next", callback_data="getvideo")]]))
-            sent = message
+            await message.edit_media(
+                InputMediaVideo(media=file_id, caption=caption_text),
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("🎬 Next Video", callback_data="getvideo")]]
+                )
+            )
+            sent_message = message
         else:
-            sent = await client.send_video(cid, file_id, caption=caption, protect_content=PROTECT_CONTENT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Next", callback_data="getvideo")]]))
-        
-        USER_ACTIVE_VIDEOS.setdefault(uid, set()).add(sent.id)
-        asyncio.create_task(auto_delete(client, cid, sent.id, uid))
+            sent_message = await client.send_video(
+                chat_id=chat_id,
+                video=file_id,
+                caption=caption_text,
+                protect_content=PROTECT_CONTENT,
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("🎬 Next Video", callback_data="getvideo")]]
+                )
+            )
+
+        USER_ACTIVE_VIDEOS.setdefault(user_id, set()).add(sent_message.id)
+        asyncio.create_task(auto_delete_video(client, chat_id, sent_message.id, user_id))
+
     except Exception as e:
-        print(f"Video error: {e}")
-        await message.reply_text("⚠️ Failed")
+        print(f"Video send error: {e}")
+        await message.reply_text("Failed to load video.")
 
-async def show_verify(client, message, uid, is_second, is_third):
-    """Show verification"""
-    vid = ''.join(random.choices(string.ascii_uppercase + string.digits, k=7))
-    TEMP_CHAT[uid] = message.chat.id
-    
-    bot_info = await get_bot_info(client)
-    link = f"https://telegram.me/{bot_info.username}?start=verify_{uid}_{vid}_video"
-    
-    db_task = udb.create_verify_id(uid, vid)
-    short_task = get_shortlink(link, is_second, is_third)
-    _, short = await asyncio.gather(db_task, short_task)
-    
-    if is_third:
-        tut, msg = TUTORIAL3, text.THIRDT_VERIFICATION_TEXT
-    elif is_second:
-        tut, msg = TUTORIAL2, text.SECOND_VERIFICATION_TEXT
-    else:
-        tut, msg = TUTORIAL, text.VERIFICATION_TEXT
-    
-    sent = await message.reply_photo(
-        photo=VERIFY_IMG,
-        caption=msg.format(message.from_user.mention, "User", get_readable_time(TWO_VERIFY_GAP)),
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("♻️ Verify", url=short)], [InlineKeyboardButton("❓ How", url=tut)]])
-    )
-    asyncio.create_task(delete_later(sent, 300))
 
-async def delete_later(msg, delay):
-    """Delete after delay"""
-    await asyncio.sleep(delay)
-    try:
-        await msg.delete()
-    except:
-        pass
-
-async def auto_delete(client, cid, mid, uid):
-    """Auto-delete video"""
+async def auto_delete_video(client: Client, chat_id: int, message_id: int, user_id: int):
     try:
         await asyncio.sleep(DELETE_TIMER)
         try:
-            await client.delete_messages(cid, mid)
+            await client.delete_messages(chat_id, message_id)
         except:
-            pass
-        if uid in USER_ACTIVE_VIDEOS:
-            USER_ACTIVE_VIDEOS[uid].discard(mid)
-            if not USER_ACTIVE_VIDEOS[uid]:
-                USER_ACTIVE_VIDEOS.pop(uid, None)
-                await client.send_message(cid, "✅ Video is delted due to inactivity.\n\nClick below button to get new video 👇", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 More", callback_data="getvideo")]]))
+            pass 
+        if user_id in USER_ACTIVE_VIDEOS:
+            USER_ACTIVE_VIDEOS[user_id].discard(message_id)
+            if not USER_ACTIVE_VIDEOS[user_id]:
+                USER_ACTIVE_VIDEOS.pop(user_id, None)
+                await client.send_message(chat_id, "✅ Video deleted successfully.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")]]))
     except Exception as e:
-        print(f"Delete error: {e}")
+        print(f"Auto delete error: {e}")
+
+
+
+
+
+
+
 
