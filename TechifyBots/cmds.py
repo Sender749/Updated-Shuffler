@@ -73,7 +73,7 @@ async def start_command(client, message):
     uid = message.from_user.id
     
     if await udb.is_user_banned(uid):
-        await message.reply("**🚫 Banned**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support", url=f"https://t.me/{ADMIN_USERNAME}")]]))
+        await message.reply("**🚫 You are banned from using this bot**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support", url=f"https://t.me/{ADMIN_USERNAME}")]]))
         return
     
     # Handle verification callback
@@ -175,11 +175,11 @@ async def send_video(client, message, uid=None):
     )
     
     if banned:
-        await message.reply("**🚫 Banned**")
+        await message.reply("**🚫 You are banned from using this bot**")
         return
     
     if limits.get("maintenance"):
-        await message.reply_text("**🛠️ Maintenance**")
+        await message.reply_text("**🛠️ Bot Under Maintenance — Back Soon!**")
         return
     
     if IS_FSUB and not await get_fsub(client, message):
@@ -295,6 +295,7 @@ async def auto_delete(client, cid, mid, uid):
             USER_ACTIVE_VIDEOS[uid].discard(mid)
             if not USER_ACTIVE_VIDEOS[uid]:
                 USER_ACTIVE_VIDEOS.pop(uid, None)
-                await client.send_message(cid, "✅ Deleted", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 More", callback_data="getvideo")]]))
+                await client.send_message(cid, "✅ Video is delted due to inactivity.\n\nClick below button to get new video 👇", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 More", callback_data="getvideo")]]))
     except Exception as e:
         print(f"Delete error: {e}")
+
