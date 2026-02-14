@@ -142,53 +142,62 @@ async def send_video_logic(client: Client, message: Message, user_id: int = None
             is_second_shortener = await udb.use_second_shortener(user_id, TWO_VERIFY_GAP)
             is_third_shortener = await udb.use_third_shortener(user_id, THREE_VERIFY_GAP)
             
-            # If not verified or verification expired, show verification message
-            if not user_verified or is_second_shortener or is_third_shortener:
-                # Create verification ID
-                verify_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=7))
-                await udb.create_verify_id(user_id, verify_id)
+            # If user is verified, give unlimited access
+            if user_verified and not is_second_shortener and not is_third_shortener:
+                # ✅ User is VERIFIED - Give unlimited access
+                usage_text = "✅ Verified: Unlimited Access"
+            else:
+                # User NOT verified or verification expired
+                # Check if they still have free limit
+                usage = await mdb.check_and_increment_usage(user_id)
                 
-                # Store user_id for later use
-                TEMP_CHAT[user_id] = chat_id
-                
-                # Get appropriate shortlink
-                bot_info = await client.get_me()
-                verify_link = f"https://telegram.me/{bot_info.username}?start=verify_{user_id}_{verify_id}_video"
-                short_link = await get_shortlink(verify_link, is_second_shortener, is_third_shortener)
-                
-                # Select appropriate tutorial based on verification stage
-                if is_third_shortener:
-                    tutorial_link = TUTORIAL3
-                    msg_text = text.THIRDT_VERIFICATION_TEXT
-                elif is_second_shortener:
-                    tutorial_link = TUTORIAL2
-                    msg_text = text.SECOND_VERIFICATION_TEXT
+                if usage["allowed"]:
+                    # Still have free videos remaining
+                    usage_text = f"📊 Limit: {usage['count']}/{usage['limit']}"
                 else:
-                    tutorial_link = TUTORIAL
-                    msg_text = text.VERIFICATION_TEXT
-                
-                buttons = [
-                    [InlineKeyboardButton(text="♻️ ᴠᴇʀɪғʏ ♻️", url=short_link)],
-                    [InlineKeyboardButton(text="❗️ ʜᴏᴡ ᴛᴏ ᴠᴇʀɪғʏ ❓", url=tutorial_link)]
-                ]
-                
-                # Send verification message
-                sent = await message.reply_photo(
-                    photo=VERIFY_IMG,
-                    caption=msg_text.format(message.from_user.mention, "User", get_readable_time(TWO_VERIFY_GAP)),
-                    reply_markup=InlineKeyboardMarkup(buttons)
-                )
-                
-                # Auto-delete verification message after 5 minutes
-                await asyncio.sleep(300)
-                try:
-                    await sent.delete()
-                except:
-                    pass
-                return
-            
-            # ✅ User is VERIFIED - Give unlimited access
-            usage_text = "✅ Verified: Unlimited Access"
+                    # Free limit exhausted - Show verification
+                    # Create verification ID
+                    verify_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=7))
+                    await udb.create_verify_id(user_id, verify_id)
+                    
+                    # Store user_id for later use
+                    TEMP_CHAT[user_id] = chat_id
+                    
+                    # Get appropriate shortlink
+                    bot_info = await client.get_me()
+                    verify_link = f"https://telegram.me/{bot_info.username}?start=verify_{user_id}_{verify_id}_video"
+                    short_link = await get_shortlink(verify_link, is_second_shortener, is_third_shortener)
+                    
+                    # Select appropriate tutorial based on verification stage
+                    if is_third_shortener:
+                        tutorial_link = TUTORIAL3
+                        msg_text = text.THIRDT_VERIFICATION_TEXT
+                    elif is_second_shortener:
+                        tutorial_link = TUTORIAL2
+                        msg_text = text.SECOND_VERIFICATION_TEXT
+                    else:
+                        tutorial_link = TUTORIAL
+                        msg_text = text.VERIFICATION_TEXT
+                    
+                    buttons = [
+                        [InlineKeyboardButton(text="♻️ ᴠᴇʀɪғʏ ♻️", url=short_link)],
+                        [InlineKeyboardButton(text="❗️ ʜᴏᴡ ᴛᴏ ᴠᴇʀɪғʏ ❓", url=tutorial_link)]
+                    ]
+                    
+                    # Send verification message
+                    sent = await message.reply_photo(
+                        photo=VERIFY_IMG,
+                        caption=msg_text.format(message.from_user.mention, "User", get_readable_time(TWO_VERIFY_GAP)),
+                        reply_markup=InlineKeyboardMarkup(buttons)
+                    )
+                    
+                    # Auto-delete verification message after 5 minutes
+                    await asyncio.sleep(300)
+                    try:
+                        await sent.delete()
+                    except:
+                        pass
+                    return
         
         else:
             # Verification is disabled, check usage limit normally
@@ -281,3 +290,11 @@ async def auto_delete_video(client: Client, chat_id: int, message_id: int, user_
                 await client.send_message(chat_id, "✅ Video deleted successfully.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")]]))
     except Exception as e:
         print(f"Auto delete error: {e}")
+
+
+
+
+
+
+
+
