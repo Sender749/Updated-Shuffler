@@ -43,7 +43,7 @@ async def save_media_message(message: Message):
     if not media:
         return False
 
-    if not await mdb.async_video_collection.find_one({"message_id": message.id}):
+    if not await mdb.async_video_collection.find_one({"video_id": message.id}):
         await mdb.async_video_collection.insert_one({
             "video_id": message.id,
             "file_id": media.file_id,
@@ -157,13 +157,19 @@ async def receive_skip_number(client: Client, message: Message):
 
 async def start_indexing(client: Client, user_id: int):
 
+    print(f"[INDEX DEBUG] Starting indexing for user {user_id}")
+
     data = INDEX_TASKS.get(user_id)
     if not data:
+        print("[INDEX DEBUG] No task data found")
         return
 
     channel_id = data["channel_id"]
     skip_id = data["skip_id"]
     progress_msg = data["progress_msg"]
+
+    print(f"[INDEX DEBUG] Channel: {channel_id}")
+    print(f"[INDEX DEBUG] Skip ID: {skip_id}")
 
     saved = 0
     duplicate = 0
@@ -171,47 +177,56 @@ async def start_indexing(client: Client, user_id: int):
     error = 0
     count = 0
 
+    try:
+        chat = await client.get_chat(channel_id)
+        print(f"[INDEX DEBUG] Latest message id: {chat.id}")
+    except Exception as e:
+        print(f"[INDEX DEBUG] Cannot fetch chat: {e}")
+
     current_id = skip_id + 1
+    max_empty = 50  # stop after 50 consecutive empty IDs
+    empty_count = 0
 
     while True:
 
         if data["cancel"]:
+            print("[INDEX DEBUG] Index cancelled")
             INDEX_TASKS.pop(user_id, None)
             return
 
         try:
             msg = await client.get_messages(channel_id, current_id)
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            continue
-        except:
+        except Exception as e:
+            empty_count += 1
             deleted += 1
             current_id += 1
+
+            if empty_count >= max_empty:
+                print("[INDEX DEBUG] Reached max empty messages. Stopping.")
+                break
+
             continue
 
         if not msg:
+            print("[INDEX DEBUG] No message returned. Stopping.")
             break
+
+        empty_count = 0
 
         try:
             inserted = await save_media_message(msg)
             if inserted:
                 saved += 1
+                print(f"[INDEX DEBUG] Saved message {msg.id}")
             else:
                 duplicate += 1
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            continue
-        except:
+        except Exception as e:
             error += 1
+            print(f"[INDEX DEBUG] Save error: {e}")
 
         count += 1
         current_id += 1
 
-        # Yield control to keep bot responsive
-        if count % 50 == 0:
-            await asyncio.sleep(0)
-
-        # Update progress every 20 processed
         if count % 20 == 0:
             try:
                 await progress_msg.edit_text(
@@ -228,7 +243,9 @@ Processed: {count}
             except:
                 pass
 
-    # Final completion message
+        if count % 50 == 0:
+            await asyncio.sleep(0)
+
     try:
         await progress_msg.edit_text(
             f"""✅ Indexing Completed!
@@ -244,5 +261,8 @@ Total Processed: {count}
     except:
         pass
 
+    print("[INDEX DEBUG] Indexing finished")
+
     INDEX_TASKS.pop(user_id, None)
+
 
