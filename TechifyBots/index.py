@@ -45,7 +45,7 @@ async def save_media_message(message: Message):
 
     if not await mdb.async_video_collection.find_one({"message_id": message.id}):
         await mdb.async_video_collection.insert_one({
-            "message_id": message.id,
+            "video_id": message.id,
             "file_id": media.file_id,
             "media_type": media_type,
             "duration": duration,
@@ -245,3 +245,4 @@ Total Processed: {count}
         pass
 
     INDEX_TASKS.pop(user_id, None)
+
