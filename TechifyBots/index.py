@@ -176,19 +176,12 @@ async def start_indexing(client: Client, user_id: int):
     error = 0
     count = 0
 
-    # ✅ BOT SAFE — Get latest message ID
-    try:
-        chat = await client.get_chat(channel_id)
-        latest_id = chat.last_message_id
-    except Exception as e:
-        print(f"[INDEX DEBUG] Failed to get latest message: {e}")
-        return
-
-    print(f"[INDEX DEBUG] Latest message ID: {latest_id}")
-
     current_id = 1 if skip_id == 0 else skip_id + 1
 
-    while current_id <= latest_id:
+    consecutive_missing = 0
+    max_missing_limit = 100  # stop after 100 consecutive missing IDs
+
+    while True:
 
         if data.get("cancel"):
             print("[INDEX DEBUG] Index cancelled")
@@ -201,13 +194,28 @@ async def start_indexing(client: Client, user_id: int):
             await asyncio.sleep(e.value)
             continue
         except:
+            consecutive_missing += 1
             deleted += 1
             current_id += 1
+
+            if consecutive_missing >= max_missing_limit:
+                print("[INDEX DEBUG] Reached stop limit. Ending indexing.")
+                break
+
             continue
 
         if not msg:
+            consecutive_missing += 1
             current_id += 1
+
+            if consecutive_missing >= max_missing_limit:
+                print("[INDEX DEBUG] No more messages. Ending indexing.")
+                break
+
             continue
+
+        # Reset missing counter if message found
+        consecutive_missing = 0
 
         try:
             inserted = await save_media_message(msg)
