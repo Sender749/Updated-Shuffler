@@ -133,8 +133,9 @@ async def receive_skip_number(client: Client, message: Message):
         skip_id = int(text)
 
     await message.delete()
-
-    progress_msg = await message.reply_text(
+    msg_id = data.get("msg_id")
+    progress_msg = await client.get_messages(message.chat.id, msg_id)
+    await progress_msg.edit_text(
         "⏳ Starting Indexing...",
         reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]]
@@ -184,8 +185,6 @@ async def start_indexing(client: Client, user_id: int):
         print(f"[INDEX DEBUG] Cannot fetch chat: {e}")
 
     current_id = 1 if skip_id == 0 else skip_id + 1
-    max_empty = 200  # stop after 200 consecutive empty IDs
-    empty_count = 0
 
     while True:
 
@@ -264,6 +263,7 @@ Total Processed: {count}
     print("[INDEX DEBUG] Indexing finished")
 
     INDEX_TASKS.pop(user_id, None)
+
 
 
 
