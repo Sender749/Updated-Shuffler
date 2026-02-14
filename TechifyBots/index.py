@@ -170,53 +170,50 @@ async def start_indexing(client: Client, user_id: int):
     skip_id = data["skip_id"]
     progress_msg = data["progress_msg"]
 
-    print(f"[INDEX DEBUG] Channel: {channel_id}")
-    print(f"[INDEX DEBUG] Skip ID: {skip_id}")
-
     saved = 0
     duplicate = 0
     deleted = 0
     error = 0
     count = 0
 
+    # 🔹 Get latest message ID (REAL STOP LIMIT)
     try:
-        chat = await client.get_chat(channel_id)
+        async for m in client.get_chat_history(channel_id, limit=1):
+            latest_id = m.id
+            break
     except Exception as e:
-        print(f"[INDEX DEBUG] Cannot fetch chat: {e}")
+        print(f"[INDEX DEBUG] Failed to get latest message: {e}")
+        return
+
+    print(f"[INDEX DEBUG] Latest message ID: {latest_id}")
 
     current_id = 1 if skip_id == 0 else skip_id + 1
 
-    while True:
+    while current_id <= latest_id:
 
-        if data["cancel"]:
+        if data.get("cancel"):
             print("[INDEX DEBUG] Index cancelled")
             INDEX_TASKS.pop(user_id, None)
             return
 
         try:
             msg = await client.get_messages(channel_id, current_id)
-        except Exception as e:
-            empty_count += 1
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            continue
+        except:
             deleted += 1
             current_id += 1
-
-            if empty_count >= max_empty:
-                print("[INDEX DEBUG] Reached max empty messages. Stopping.")
-                break
-
             continue
 
         if not msg:
-            print("[INDEX DEBUG] No message returned. Stopping.")
-            break
-
-        empty_count = 0
+            current_id += 1
+            continue
 
         try:
             inserted = await save_media_message(msg)
             if inserted:
                 saved += 1
-                print(f"[INDEX DEBUG] Saved message {msg.id}")
             else:
                 duplicate += 1
         except Exception as e:
@@ -226,6 +223,11 @@ async def start_indexing(client: Client, user_id: int):
         count += 1
         current_id += 1
 
+        # 🔹 Keep bot responsive
+        if count % 50 == 0:
+            await asyncio.sleep(0)
+
+        # 🔹 Update progress every 20 messages
         if count % 20 == 0:
             try:
                 await progress_msg.edit_text(
@@ -235,16 +237,17 @@ Processed: {count}
 
 ✅ Saved: {saved}
 ♻️ Duplicate: {duplicate}
-❌ Deleted/Not Exist: {deleted}
+❌ Deleted: {deleted}
 ⚠️ Errors: {error}
-"""
+""",
+                    reply_markup=InlineKeyboardMarkup(
+                        [[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]]
+                    )
                 )
             except:
                 pass
 
-        if count % 50 == 0:
-            await asyncio.sleep(0)
-
+    # 🔹 Final completion message
     try:
         await progress_msg.edit_text(
             f"""✅ Indexing Completed!
@@ -253,9 +256,12 @@ Total Processed: {count}
 
 📁 Saved: {saved}
 ♻️ Duplicate: {duplicate}
-❌ Deleted/Not Exist: {deleted}
+❌ Deleted: {deleted}
 ⚠️ Errors: {error}
-"""
+""",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]]
+            )
         )
     except:
         pass
@@ -263,8 +269,3 @@ Total Processed: {count}
     print("[INDEX DEBUG] Indexing finished")
 
     INDEX_TASKS.pop(user_id, None)
-
-
-
-
-
