@@ -5,10 +5,16 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 import asyncio
 from pyrogram.errors import FloodWait
 from datetime import datetime
+from pyrogram.filters import create
 
 INDEX_TASKS = {}
 
 # ==================== SAVE MEDIA ====================
+def is_waiting_skip(_, __, message):
+    data = INDEX_TASKS.get(message.from_user.id)
+    return bool(data and data.get("state") == "await_skip")
+
+skip_filter = create(is_waiting_skip)
 
 async def save_media(msg: Message):
     """Save any media type"""
@@ -80,7 +86,7 @@ async def manual_index(client: Client, message: Message):
 
 # ==================== SKIP NUMBER ====================
 
-@Client.on_message(filters.private & filters.user(ADMIN_ID) & filters.text)
+@Client.on_message(filters.private & filters.user(ADMIN_ID) & filters.text & skip_filter)
 async def skip_number(client: Client, message: Message):
     """Receive skip message ID"""
     if message.text.startswith("/"):
@@ -212,3 +218,4 @@ Total: {count}
         pass
     
     INDEX_TASKS.pop(user_id, None)
+
