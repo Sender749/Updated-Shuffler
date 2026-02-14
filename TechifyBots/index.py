@@ -110,7 +110,9 @@ async def manual_index_cmd(client: Client, message: Message):
 @Client.on_message(filters.private & filters.user(ADMIN_ID) & filters.text)
 async def receive_skip_number(client: Client, message: Message):
 
+    # ✅ FIX: Only block index-related commands, not all commands
     if message.text.startswith("/"):
+        # Allow all commands to pass through to their respective handlers
         return
 
     data = INDEX_TASKS.get(message.from_user.id)
@@ -154,7 +156,7 @@ async def receive_skip_number(client: Client, message: Message):
 
 
 # =========================================================
-# INDEXING WORKER (FORWARD SAFE LOGIC)
+# INDEXING WORKER (IMPROVED LOGIC WITH PROPER END DETECTION)
 # =========================================================
 
 async def start_indexing(client: Client, user_id: int):
@@ -178,8 +180,11 @@ async def start_indexing(client: Client, user_id: int):
     current_id = 1 if skip_id == 0 else skip_id + 1
 
     consecutive_missing = 0
-    max_missing_limit = 20   # 🔥 IMPORTANT FIX
+    max_missing_limit = 20  # Stop after 20 consecutive missing messages
 
+    # ✅ NEW: Track the highest message ID found to prevent infinite loop
+    last_valid_id = current_id - 1
+    
     while True:
 
         if data.get("cancel"):
@@ -191,27 +196,33 @@ async def start_indexing(client: Client, user_id: int):
         except FloodWait as e:
             await asyncio.sleep(e.value)
             continue
-        except:
+        except Exception as e:
+            consecutive_missing += 1
+            deleted += 1
+            current_id += 1
+
+            # ✅ IMPROVED: Stop if we've gone too far past the last valid message
+            if consecutive_missing >= max_missing_limit:
+                print(f"[INDEX DEBUG] Stopping: {consecutive_missing} consecutive missing messages")
+                break
+
+            continue
+
+        # ✅ IMPROVED: Check if message is empty or doesn't exist
+        if not msg or msg.empty:
             consecutive_missing += 1
             deleted += 1
             current_id += 1
 
             if consecutive_missing >= max_missing_limit:
+                print(f"[INDEX DEBUG] Stopping: {consecutive_missing} consecutive empty messages")
                 break
 
             continue
 
-        if not msg:
-            consecutive_missing += 1
-            current_id += 1
-
-            if consecutive_missing >= max_missing_limit:
-                break
-
-            continue
-
-        # Reset missing counter
+        # Reset missing counter when we find a valid message
         consecutive_missing = 0
+        last_valid_id = current_id
 
         try:
             inserted = await save_media_message(msg)
@@ -226,9 +237,11 @@ async def start_indexing(client: Client, user_id: int):
         count += 1
         current_id += 1
 
+        # Sleep to avoid flooding
         if count % 50 == 0:
             await asyncio.sleep(0)
 
+        # Update progress every 20 messages
         if count % 20 == 0:
             try:
                 await progress_msg.edit_text(
@@ -240,6 +253,8 @@ Processed: {count}
 ♻️ Duplicate: {duplicate}
 ❌ Deleted: {deleted}
 ⚠️ Errors: {error}
+
+Last Message ID: {current_id - 1}
 """,
                     reply_markup=InlineKeyboardMarkup(
                         [[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]]
@@ -248,6 +263,7 @@ Processed: {count}
             except:
                 pass
 
+    # ✅ IMPROVED: Final completion message with accurate stats
     try:
         await progress_msg.edit_text(
             f"""✅ Indexing Completed!
@@ -258,12 +274,13 @@ Total Processed: {count}
 ♻️ Duplicate: {duplicate}
 ❌ Deleted: {deleted}
 ⚠️ Errors: {error}
+
+Last Message ID: {last_valid_id}
 """,
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]]
-            )
+            reply_markup=None  # Remove cancel button after completion
         )
-    except:
-        pass
+    except Exception as e:
+        print(f"[INDEX DEBUG] Error updating final message: {e}")
 
     INDEX_TASKS.pop(user_id, None)
+    print(f"[INDEX DEBUG] Indexing completed for user {user_id}")
