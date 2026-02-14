@@ -1,35 +1,85 @@
 from pyrogram import Client, filters
 from vars import *
 from Database.maindb import mdb
-from pyrogram.types import Message
-from pyrogram.types import *
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 import asyncio, re
 from pyrogram.errors import FloodWait
-import time
-
-def debug_log(text):
-    print(f"[INDEX DEBUG {time.strftime('%H:%M:%S')}] {text}")
+from datetime import datetime
 
 INDEX_TASKS = {}
 
-@Client.on_message(filters.chat(DATABASE_CHANNEL_ID) & filters.video)
-async def save_video(client: Client, message: Message):
+# =========================================================
+# SAVE MEDIA FUNCTION (Supports all types)
+# =========================================================
+
+async def save_media_message(message: Message):
+    media = None
+    media_type = None
+    duration = 0
+
+    if message.video:
+        media = message.video
+        media_type = "video"
+        duration = media.duration or 0
+
+    elif message.photo:
+        media = message.photo[-1]
+        media_type = "photo"
+
+    elif message.document:
+        media = message.document
+        media_type = "document"
+
+    elif message.audio:
+        media = message.audio
+        media_type = "audio"
+        duration = media.duration or 0
+
+    elif message.voice:
+        media = message.voice
+        media_type = "voice"
+        duration = media.duration or 0
+
+    if not media:
+        return False
+
+    if not await mdb.async_video_collection.find_one({"message_id": message.id}):
+        await mdb.async_video_collection.insert_one({
+            "message_id": message.id,
+            "file_id": media.file_id,
+            "media_type": media_type,
+            "duration": duration,
+            "added_at": datetime.now()
+        })
+        return True
+
+    return False
+
+
+# =========================================================
+# AUTO INDEXING (All Media Types)
+# =========================================================
+
+@Client.on_message(
+    filters.chat(DATABASE_CHANNEL_ID) &
+    (filters.video | filters.photo | filters.document | filters.audio | filters.voice)
+)
+async def auto_index_media(client: Client, message: Message):
     try:
-        video_id = message.id
-        file_id = message.video.file_id
-        video_duration = message.video.duration
-        is_premium = False
-        try:
-            await mdb.save_video_id(video_id, file_id, video_duration, is_premium)
-        except FloodWait as e:
-            await asyncio.sleep(e.value)
-            await mdb.save_video_id(video_id, file_id, video_duration, is_premium)
-    except Exception as t:
-        print(f"Auto Index Error: {str(t)}")
+        await save_media_message(message)
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        await save_media_message(message)
+    except Exception as e:
+        print(f"Auto Index Error: {e}")
+
+
+# =========================================================
+# MANUAL INDEX COMMAND
+# =========================================================
 
 @Client.on_message(filters.command("index") & filters.private & filters.user(ADMIN_ID))
 async def manual_index_cmd(client: Client, message: Message):
-    debug_log(f"/index triggered by {message.from_user.id}")
 
     channels = DATABASE_CHANNEL_ID
     if not isinstance(channels, list):
@@ -39,12 +89,11 @@ async def manual_index_cmd(client: Client, message: Message):
     for ch in channels:
         try:
             chat = await client.get_chat(ch)
-            debug_log(f"Adding button for channel: {ch}")
             buttons.append(
                 [InlineKeyboardButton(chat.title, callback_data=f"index_select_{ch}")]
             )
-        except Exception as e:
-            debug_log(f"Error getting chat {ch}: {e}")
+        except:
+            continue
 
     buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")])
 
@@ -53,6 +102,11 @@ async def manual_index_cmd(client: Client, message: Message):
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
+
+# =========================================================
+# RECEIVE SKIP NUMBER
+# =========================================================
+
 @Client.on_message(filters.private & filters.user(ADMIN_ID) & filters.text)
 async def receive_skip_number(client: Client, message: Message):
 
@@ -60,14 +114,13 @@ async def receive_skip_number(client: Client, message: Message):
         return
 
     data = INDEX_TASKS.get(message.from_user.id)
-
     if not data or data.get("state") != "await_skip":
         return
 
     channel_id = data["channel_id"]
     text = message.text.strip()
 
-    # Extract skip ID
+    # Extract message ID
     if "t.me" in text:
         match = re.search(r"/(\d+)", text)
         if not match:
@@ -97,7 +150,13 @@ async def receive_skip_number(client: Client, message: Message):
 
     asyncio.create_task(start_indexing(client, message.from_user.id))
 
+
+# =========================================================
+# INDEXING WORKER (FORWARD SAFE LOGIC)
+# =========================================================
+
 async def start_indexing(client: Client, user_id: int):
+
     data = INDEX_TASKS.get(user_id)
     if not data:
         return
@@ -112,53 +171,51 @@ async def start_indexing(client: Client, user_id: int):
     error = 0
     count = 0
 
-    try:
-        async for msg in client.get_chat_history(
-                channel_id,
-                offset_id=skip_id,
-                reverse=True
-        ):
+    current_id = skip_id + 1
 
-            if data["cancel"]:
-                INDEX_TASKS.pop(user_id, None)
-                return
+    while True:
 
-            if msg.empty:
-                deleted += 1
-                continue
-   
-            if not msg.video:
-                continue
+        if data["cancel"]:
+            INDEX_TASKS.pop(user_id, None)
+            return
 
+        try:
+            msg = await client.get_messages(channel_id, current_id)
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            continue
+        except:
+            deleted += 1
+            current_id += 1
+            continue
+
+        if not msg:
+            break
+
+        try:
+            inserted = await save_media_message(msg)
+            if inserted:
+                saved += 1
+            else:
+                duplicate += 1
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            continue
+        except:
+            error += 1
+
+        count += 1
+        current_id += 1
+
+        # Yield control to keep bot responsive
+        if count % 50 == 0:
+            await asyncio.sleep(0)
+
+        # Update progress every 20 processed
+        if count % 20 == 0:
             try:
-                existing = await mdb.async_video_collection.find_one(
-                    {"video_id": msg.id}
-                )
-                if existing:
-                    duplicate += 1
-                else:
-                    await mdb.save_video_id(
-                        msg.id,
-                        msg.video.file_id,
-                        msg.video.duration,
-                        False
-                    )
-                    saved += 1
-
-            except FloodWait as e:
-                await asyncio.sleep(e.value)
-                continue
-
-            except Exception:
-                error += 1
-
-            count += 1
-
-            # Progress update every 20 files
-            if count % 20 == 0:
-                try:
-                    await progress_msg.edit_text(
-                        f"""📂 Indexing In Progress...
+                await progress_msg.edit_text(
+                    f"""📂 Indexing In Progress...
 
 Processed: {count}
 
@@ -167,34 +224,12 @@ Processed: {count}
 ❌ Deleted/Not Exist: {deleted}
 ⚠️ Errors: {error}
 """
-                    )
-                except FloodWait as e:
-                    await asyncio.sleep(e.value)
-                except:
-                    pass
+                )
+            except:
+                pass
 
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
-        return await start_indexing(client, user_id)
-
-    except Exception as e:
-        print(f"Indexing Fatal Error: {e}")
-
-    # Final message (always executes)
+    # Final completion message
     try:
-        await progress_msg.edit_text(
-            f"""✅ Indexing Completed!
-
-Total Processed: {count}
-
-📁 Saved: {saved}
-♻️ Duplicate: {duplicate}
-❌ Deleted/Not Exist: {deleted}
-⚠️ Errors: {error}
-"""
-        )
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
         await progress_msg.edit_text(
             f"""✅ Indexing Completed!
 
@@ -210,8 +245,3 @@ Total Processed: {count}
         pass
 
     INDEX_TASKS.pop(user_id, None)
-
-
-
-
-
