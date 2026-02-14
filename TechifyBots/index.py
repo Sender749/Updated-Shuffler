@@ -180,7 +180,7 @@ async def start_indexing(client: Client, user_id: int):
     current_id = 1 if skip_id == 0 else skip_id + 1
 
     consecutive_missing = 0
-    max_missing_limit = 20  # Stop after 20 consecutive missing messages
+    max_missing_limit = 100  # Stop after 20 consecutive missing messages
 
     # ✅ NEW: Track the highest message ID found to prevent infinite loop
     last_valid_id = current_id - 1
@@ -284,3 +284,4 @@ Last Message ID: {last_valid_id}
 
     INDEX_TASKS.pop(user_id, None)
     print(f"[INDEX DEBUG] Indexing completed for user {user_id}")
+
