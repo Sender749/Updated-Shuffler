@@ -4,23 +4,88 @@ from vars import *
 from Database.maindb import mdb
 from Database.userdb import udb
 from datetime import datetime
-import pytz, random, asyncio
+import pytz, random, asyncio, string
 from .fsub import get_fsub
 from Script import text
+from utils import get_shortlink, get_readable_time
+from bot import bot
 
 VIDEO_CACHE = {}
 USER_ACTIVE_VIDEOS = {}
 USER_RECENT_VIDEOS = {}
+TEMP_CHAT = {}
 
 @Client.on_message(filters.command("start") & filters.private)
 async def start_command(client, message):
     if await udb.is_user_banned(message.from_user.id):
         await message.reply("**🚫 You are banned from using this bot**",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support 🧑‍💻", url=f"https://t.me/{ADMIN_USERNAME}")]]))
         return
+    
+    # Handle verification callback
+    if len(message.command) > 1:
+        data = message.command[1]
+        if data.startswith("verify_"):
+            parts = data.split("_")
+            if len(parts) >= 4:
+                _, user_id, verify_id, video_id = parts[0], int(parts[1]), parts[2], parts[3]
+                
+                # Verify the token
+                verify_info = await udb.get_verify_id_info(user_id, verify_id)
+                
+                if not verify_info or verify_info.get("verified"):
+                    await message.reply("<b>ʟɪɴᴋ ᴇxᴘɪʀᴇᴅ ᴛʀʏ ᴀɢᴀɪɴ...</b>")
+                    return
+                
+                ist_timezone = pytz.timezone('Asia/Kolkata')
+                
+                # Determine which verification stage
+                is_second = await udb.use_second_shortener(user_id, TWO_VERIFY_GAP)
+                is_third = await udb.user_verified(user_id)
+                
+                if is_third:
+                    key = "third_time_verified"
+                    verify_num = 3
+                    msg = text.THIRDT_VERIFY_COMPLETE_TEXT
+                elif is_second:
+                    key = "second_time_verified"
+                    verify_num = 2
+                    msg = text.SECOND_VERIFY_COMPLETE_TEXT
+                else:
+                    key = "last_verified"
+                    verify_num = 1
+                    msg = text.VERIFY_COMPLETE_TEXT
+                
+                current_time = datetime.now(tz=ist_timezone)
+                
+                # Update verification time
+                await udb.update_verify_user(user_id, {key: current_time})
+                await udb.update_verify_id_info(user_id, verify_id, {"verified": True})
+                
+                # Log verification
+                await client.send_message(
+                    LOG_VR_CHANNEL,
+                    text.VERIFIED_LOG_TEXT.format(
+                        message.from_user.mention,
+                        user_id,
+                        current_time.strftime('%d %B %Y'),
+                        verify_num
+                    )
+                )
+                
+                # Send success message
+                await message.reply_photo(
+                    photo=VERIFY_IMG,
+                    caption=msg.format(message.from_user.mention, get_readable_time(TWO_VERIFY_GAP)),
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🎬 Get Video Now", callback_data="getvideo")
+                    ]])
+                )
+                return
+    
     if IS_FSUB and not await get_fsub(client, message):return
     if await udb.get_user(message.from_user.id) is None:
         await udb.addUser(message.from_user.id, message.from_user.first_name)
-        bot = await client.get_me()
+        bot_obj = await client.get_me()
         await client.send_message(
             LOG_CHNL,
             text.LOG.format(
@@ -28,7 +93,7 @@ async def start_command(client, message):
                 getattr(message.from_user, "dc_id", "N/A"),
                 message.from_user.first_name or "N/A",
                 f"@{message.from_user.username}" if message.from_user.username else "N/A",
-                bot.username
+                bot_obj.username
             )
         )
     await message.reply_photo(
@@ -63,19 +128,80 @@ async def send_video_logic(client: Client, message: Message, user_id: int = None
     if IS_FSUB and not await get_fsub(client, message):
         return
 
-    # ✅ Centralized plan + limit check
-    usage = await mdb.check_and_increment_usage(user_id)
-
-    if not usage["allowed"]:
-        await message.reply_text(
-            f"**🚫 You've reached your daily limit of {usage['limit']} videos.\n\nUpgrade to Prime for unlimited access.**"
-        )
-        return
-
-    # Prepare usage text
-    if usage["plan"] == "prime":
+    # Get user plan
+    user = await mdb.get_user(user_id)
+    is_prime = user.get("plan", "free") == "prime"
+    
+    # If user is prime, skip verification and limit checks
+    if is_prime:
+        usage = await mdb.check_and_increment_usage(user_id)
+        if not usage["allowed"]:
+            await message.reply_text(
+                f"**🚫 You've reached your daily limit of {usage['limit']} videos.\n\nUpgrade to Prime for unlimited access.**"
+            )
+            return
         usage_text = "🌟 Prime User: Unlimited Access"
     else:
+        # For free users, check verification first
+        if IS_VERIFY:
+            user_verified = await udb.is_user_verified(user_id)
+            is_second_shortener = await udb.use_second_shortener(user_id, TWO_VERIFY_GAP)
+            is_third_shortener = await udb.use_third_shortener(user_id, THREE_VERIFY_GAP)
+            
+            # If not verified or verification expired, show verification message
+            if not user_verified or is_second_shortener or is_third_shortener:
+                # Create verification ID
+                verify_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=7))
+                await udb.create_verify_id(user_id, verify_id)
+                
+                # Store user_id for later use
+                TEMP_CHAT[user_id] = chat_id
+                
+                # Get appropriate shortlink
+                bot_info = await client.get_me()
+                verify_link = f"https://telegram.me/{bot_info.username}?start=verify_{user_id}_{verify_id}_video"
+                short_link = await get_shortlink(verify_link, is_second_shortener, is_third_shortener)
+                
+                # Select appropriate tutorial based on verification stage
+                if is_third_shortener:
+                    tutorial_link = TUTORIAL3
+                    msg_text = text.THIRDT_VERIFICATION_TEXT
+                elif is_second_shortener:
+                    tutorial_link = TUTORIAL2
+                    msg_text = text.SECOND_VERIFICATION_TEXT
+                else:
+                    tutorial_link = TUTORIAL
+                    msg_text = text.VERIFICATION_TEXT
+                
+                buttons = [
+                    [InlineKeyboardButton(text="♻️ ᴠᴇʀɪғʏ ♻️", url=short_link)],
+                    [InlineKeyboardButton(text="❗️ ʜᴏᴡ ᴛᴏ ᴠᴇʀɪғʏ ❓", url=tutorial_link)]
+                ]
+                
+                # Send verification message
+                sent = await message.reply_photo(
+                    photo=VERIFY_IMG,
+                    caption=msg_text.format(message.from_user.mention, "User", get_readable_time(TWO_VERIFY_GAP)),
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+                
+                # Auto-delete verification message after 5 minutes
+                await asyncio.sleep(300)
+                try:
+                    await sent.delete()
+                except:
+                    pass
+                return
+        
+        # Check usage limit for free users who are verified
+        usage = await mdb.check_and_increment_usage(user_id)
+        
+        if not usage["allowed"]:
+            await message.reply_text(
+                f"**🚫 You've reached your daily limit of {usage['limit']} videos.\n\nUpgrade to Prime for unlimited access or verify to get unlimited videos for today.**"
+            )
+            return
+        
         usage_text = f"📊 Limit: {usage['count']}/{usage['limit']}"
 
     # Load videos
