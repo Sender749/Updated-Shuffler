@@ -11,16 +11,16 @@ import asyncio
 async def callback_query_handler(client, query: CallbackQuery):
     try:
         if query.data == "start":
-            await query.message.edit_caption(
-                caption=text.START.format(query.from_user.mention),
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🎬 Get Video", callback_data="getvideo")],
-                    [InlineKeyboardButton("🍿 𝖡𝗎𝗒 𝖲𝗎𝖻𝗌𝖼𝗋𝗂𝗉𝗍𝗂𝗈𝗇 🍾", callback_data="pro")],
-                    [InlineKeyboardButton("ℹ️ Disclaimer", callback_data="about"),
-                     InlineKeyboardButton("📚 𝖧𝖾𝗅𝗉", callback_data="help")]
-                ])
-            )
-        
+            try:
+                await query.message.edit_caption(
+                    caption=text.START.format(query.from_user.mention),
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🎬 Get Video", callback_data="getvideo")],
+                        [InlineKeyboardButton("🍿 𝖡𝗎𝗒 𝖲𝗎𝖻𝗌𝖼𝗋𝗂𝗉𝗍𝗂𝗈𝗇 🍾", callback_data="pro")],
+                        [InlineKeyboardButton("ℹ️ Disclaimer", callback_data="about"), InlineKeyboardButton("📚 𝖧𝖾𝗅𝗉", callback_data="help")]])
+                )
+            except:
+                pass
         elif query.data.startswith("index_select_"):
             await query.answer()
             channel_id = int(query.data.split("_")[-1])
