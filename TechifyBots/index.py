@@ -127,7 +127,6 @@ async def receive_skip_number(client: Client, message: Message):
             skip_id = int(parts[-1])
         except:
             return await message.reply_text("Invalid link.")
-        skip_id = int(match.group(1))
     else:
         if not text.isdigit():
             return await message.reply_text("Invalid message ID.")
@@ -181,10 +180,11 @@ async def start_indexing(client: Client, user_id: int):
 
     try:
         chat = await client.get_chat(channel_id)
+    except Exception as e:
         print(f"[INDEX DEBUG] Cannot fetch chat: {e}")
 
     current_id = 1 if skip_id == 0 else skip_id + 1
-    max_empty = 1000  # stop after 1000 consecutive empty IDs
+    max_empty = 200  # stop after 200 consecutive empty IDs
     empty_count = 0
 
     while True:
@@ -264,6 +264,7 @@ Total Processed: {count}
     print("[INDEX DEBUG] Indexing finished")
 
     INDEX_TASKS.pop(user_id, None)
+
 
 
 
