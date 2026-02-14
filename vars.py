@@ -6,11 +6,7 @@ API_HASH = os.getenv("API_HASH", "e99c3c5693d6d23a143b6ce760b7a6de")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://gd3251791_db_user:GDPQbmyXAEFDGpbL@cluster0.6jxsnxc.mongodb.net/?appName=Cluster0")
 
-_channel_env = os.getenv("DATABASE_CHANNEL_ID", "-1002517753823") # Seprate by space
-if " " in _channel_env:
-    DATABASE_CHANNEL_ID = [int(ch.strip()) for ch in _channel_env.split() if ch.strip().lstrip("-").isdigit()]
-else:
-    DATABASE_CHANNEL_ID = int(_channel_env)
+DATABASE_CHANNEL_ID = int(os.getenv("DATABASE_CHANNEL_ID", "-1002517753823"))
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6541030917"))
 PICS = (os.environ.get("PICS", "https://envs.sh/iKu.jpg https://envs.sh/iKE.jpg https://envs.sh/iKe.jpg https://envs.sh/iKi.jpg https://envs.sh/iKb.jpg")).split()
