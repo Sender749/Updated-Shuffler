@@ -27,13 +27,13 @@ TUTORIAL2 = os.getenv("TUTORIAL2", "https://t.me/Navexdisscussion/33")
 TUTORIAL3 = os.getenv("TUTORIAL3", "https://t.me/Navexdisscussion/33")
 
 # Shortener settings for 3 verifications
-SHORTENER_API = os.getenv("SHORTENER_API", "fb4812435a09dcca63276a47da3c8ac5c23239ef")
+SHORTENER_API = os.getenv("SHORTENER_API", "7ef9ed640db12a292b7c33f43922ded1feef2ddb")
 SHORTENER_WEBSITE = os.getenv("SHORTENER_WEBSITE", "instantlinks.co")
 SHORTENER_API2 = os.getenv("SHORTENER_API2", "7ef9ed640db12a292b7c33f43922ded1feef2ddb")
 SHORTENER_WEBSITE2 = os.getenv("SHORTENER_WEBSITE2", "instantlinks.co")
-SHORTENER_API3 = os.getenv("SHORTENER_API3", "bbe02c66b042f605c13ca910a0981014cf02e381")
+SHORTENER_API3 = os.getenv("SHORTENER_API3", "7ef9ed640db12a292b7c33f43922ded1feef2ddb")
 SHORTENER_WEBSITE3 = os.getenv("SHORTENER_WEBSITE3", "instantlinks.co")
 
 # Verification expiry times (in seconds)
-TWO_VERIFY_GAP = int(os.getenv("TWO_VERIFY_GAP", "28800"))  # 8 hours default
-THREE_VERIFY_GAP = int(os.getenv("THREE_VERIFY_GAP", "28800"))  # 8 hours default
+TWO_VERIFY_GAP = int(os.getenv("TWO_VERIFY_GAP", "600"))  # in seconds
+THREE_VERIFY_GAP = int(os.getenv("THREE_VERIFY_GAP", "600"))  # in seconds
