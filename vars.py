@@ -5,7 +5,13 @@ API_ID = int(os.getenv("API_ID", "25208597"))
 API_HASH = os.getenv("API_HASH", "e99c3c5693d6d23a143b6ce760b7a6de")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://gd3251791_db_user:GDPQbmyXAEFDGpbL@cluster0.6jxsnxc.mongodb.net/?appName=Cluster0")
-DATABASE_CHANNEL_ID = int(os.getenv("DATABASE_CHANNEL_ID", "-1002517753823"))
+
+_channel_env = os.getenv("DATABASE_CHANNEL_ID", "-1002517753823") # Seprate by space
+if " " in _channel_env:
+    DATABASE_CHANNEL_ID = [int(ch.strip()) for ch in _channel_env.split() if ch.strip().lstrip("-").isdigit()]
+else:
+    DATABASE_CHANNEL_ID = int(_channel_env)
+
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6541030917"))
 PICS = (os.environ.get("PICS", "https://envs.sh/iKu.jpg https://envs.sh/iKE.jpg https://envs.sh/iKe.jpg https://envs.sh/iKi.jpg https://envs.sh/iKb.jpg")).split()
 LOG_CHNL = int(os.getenv("LOG_CHNL", "-1002412135872"))
@@ -29,9 +35,9 @@ TUTORIAL3 = os.getenv("TUTORIAL3", "https://t.me/Navexdisscussion/33")
 # Shortener settings for 3 verifications
 SHORTENER_API = os.getenv("SHORTENER_API", "7ef9ed640db12a292b7c33f43922ded1feef2ddb")
 SHORTENER_WEBSITE = os.getenv("SHORTENER_WEBSITE", "instantlinks.co")
-SHORTENER_API2 = os.getenv("SHORTENER_API2", "fb4812435a09dcca63276a47da3c8ac5c23239ef")
+SHORTENER_API2 = os.getenv("SHORTENER_API2", "bbe02c66b042f605c13ca910a0981014cf02e381")
 SHORTENER_WEBSITE2 = os.getenv("SHORTENER_WEBSITE2", "instantlinks.co")
-SHORTENER_API3 = os.getenv("SHORTENER_API3", "bbe02c66b042f605c13ca910a0981014cf02e381")
+SHORTENER_API3 = os.getenv("SHORTENER_API3", "1423a167dd9dcfed061d49ca390a3c17aae34d24")
 SHORTENER_WEBSITE3 = os.getenv("SHORTENER_WEBSITE3", "instantlinks.co")
 
 # Verification expiry times (in seconds)
