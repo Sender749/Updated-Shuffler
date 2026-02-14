@@ -7,7 +7,7 @@ from datetime import datetime
 import pytz, random, asyncio, string
 from .fsub import get_fsub
 from Script import text
-from utils import get_shortlink, get_readable_time
+from .utils import get_shortlink, get_readable_time
 from bot import bot
 
 VIDEO_CACHE = {}
@@ -283,6 +283,7 @@ async def auto_delete_video(client: Client, chat_id: int, message_id: int, user_
                 await client.send_message(chat_id, "✅ Video deleted successfully.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")]]))
     except Exception as e:
         print(f"Auto delete error: {e}")
+
 
 
 
