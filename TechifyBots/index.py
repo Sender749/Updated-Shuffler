@@ -23,7 +23,7 @@ async def save_media_message(message: Message):
         duration = media.duration or 0
 
     elif message.photo:
-        media = message.photo[-1]
+        media = message.photo
         media_type = "photo"
 
     elif message.document:
@@ -163,7 +163,6 @@ async def start_indexing(client: Client, user_id: int):
 
     data = INDEX_TASKS.get(user_id)
     if not data:
-        print("[INDEX DEBUG] No task data found")
         return
 
     channel_id = data["channel_id"]
@@ -179,12 +178,11 @@ async def start_indexing(client: Client, user_id: int):
     current_id = 1 if skip_id == 0 else skip_id + 1
 
     consecutive_missing = 0
-    max_missing_limit = 100  # stop after 100 consecutive missing IDs
+    max_missing_limit = 20   # 🔥 IMPORTANT FIX
 
     while True:
 
         if data.get("cancel"):
-            print("[INDEX DEBUG] Index cancelled")
             INDEX_TASKS.pop(user_id, None)
             return
 
@@ -199,7 +197,6 @@ async def start_indexing(client: Client, user_id: int):
             current_id += 1
 
             if consecutive_missing >= max_missing_limit:
-                print("[INDEX DEBUG] Reached stop limit. Ending indexing.")
                 break
 
             continue
@@ -209,12 +206,11 @@ async def start_indexing(client: Client, user_id: int):
             current_id += 1
 
             if consecutive_missing >= max_missing_limit:
-                print("[INDEX DEBUG] No more messages. Ending indexing.")
                 break
 
             continue
 
-        # Reset missing counter if message found
+        # Reset missing counter
         consecutive_missing = 0
 
         try:
@@ -230,11 +226,9 @@ async def start_indexing(client: Client, user_id: int):
         count += 1
         current_id += 1
 
-        # Keep bot responsive
         if count % 50 == 0:
             await asyncio.sleep(0)
 
-        # Update progress every 20
         if count % 20 == 0:
             try:
                 await progress_msg.edit_text(
@@ -254,7 +248,6 @@ Processed: {count}
             except:
                 pass
 
-    # Final message
     try:
         await progress_msg.edit_text(
             f"""✅ Indexing Completed!
@@ -272,7 +265,5 @@ Total Processed: {count}
         )
     except:
         pass
-
-    print("[INDEX DEBUG] Indexing finished")
 
     INDEX_TASKS.pop(user_id, None)
