@@ -30,7 +30,7 @@ async def callback_query_handler(client, query: CallbackQuery):
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]]))
             except:
                 pass
-            INDEX_TASKS[query.from_user.id] = {"channel_id": channel_id,"state": "await_skip"}
+            INDEX_TASKS[query.from_user.id] = {"channel_id": channel_id,"state": "await_skip", "msg_id": query.message.id}
             return
         
         elif query.data == "index_cancel":
