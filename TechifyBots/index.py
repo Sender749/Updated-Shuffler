@@ -2,286 +2,213 @@ from pyrogram import Client, filters
 from vars import *
 from Database.maindb import mdb
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-import asyncio, re
+import asyncio
 from pyrogram.errors import FloodWait
 from datetime import datetime
 
 INDEX_TASKS = {}
 
-# =========================================================
-# SAVE MEDIA FUNCTION (Supports all types)
-# =========================================================
+# ==================== SAVE MEDIA ====================
 
-async def save_media_message(message: Message):
+async def save_media(msg: Message):
+    """Save any media type"""
     media = None
     media_type = None
     duration = 0
 
-    if message.video:
-        media = message.video
-        media_type = "video"
-        duration = media.duration or 0
-
-    elif message.photo:
-        media = message.photo
-        media_type = "photo"
-
-    elif message.document:
-        media = message.document
-        media_type = "document"
-
-    elif message.audio:
-        media = message.audio
-        media_type = "audio"
-        duration = media.duration or 0
-
-    elif message.voice:
-        media = message.voice
-        media_type = "voice"
-        duration = media.duration or 0
+    if msg.video:
+        media, media_type, duration = msg.video, "video", msg.video.duration or 0
+    elif msg.photo:
+        media, media_type = msg.photo, "photo"
+    elif msg.document:
+        media, media_type = msg.document, "document"
+    elif msg.audio:
+        media, media_type, duration = msg.audio, "audio", msg.audio.duration or 0
+    elif msg.voice:
+        media, media_type, duration = msg.voice, "voice", msg.voice.duration or 0
 
     if not media:
         return False
 
-    if not await mdb.async_video_collection.find_one({"video_id": message.id}):
+    if not await mdb.async_video_collection.find_one({"video_id": msg.id}):
         await mdb.async_video_collection.insert_one({
-            "video_id": message.id,
+            "video_id": msg.id,
             "file_id": media.file_id,
             "media_type": media_type,
             "duration": duration,
             "added_at": datetime.now()
         })
         return True
-
     return False
 
+# ==================== AUTO INDEX (MULTI-CHANNEL) ====================
 
-# =========================================================
-# AUTO INDEXING (All Media Types)
-# =========================================================
+# Convert single channel to list for filter
+CHANNEL_LIST = DATABASE_CHANNEL_ID if isinstance(DATABASE_CHANNEL_ID, list) else [DATABASE_CHANNEL_ID]
 
 @Client.on_message(
-    filters.chat(DATABASE_CHANNEL_ID) &
+    filters.chat(CHANNEL_LIST) &
     (filters.video | filters.photo | filters.document | filters.audio | filters.voice)
 )
-async def auto_index_media(client: Client, message: Message):
+async def auto_index(client: Client, message: Message):
+    """Auto-index from all database channels"""
     try:
-        await save_media_message(message)
+        await save_media(message)
     except FloodWait as e:
         await asyncio.sleep(e.value)
-        await save_media_message(message)
+        await save_media(message)
     except Exception as e:
-        print(f"Auto Index Error: {e}")
+        print(f"Auto index error: {e}")
 
-
-# =========================================================
-# MANUAL INDEX COMMAND
-# =========================================================
+# ==================== MANUAL INDEX ====================
 
 @Client.on_message(filters.command("index") & filters.private & filters.user(ADMIN_ID))
-async def manual_index_cmd(client: Client, message: Message):
-
-    channels = DATABASE_CHANNEL_ID
-    if not isinstance(channels, list):
-        channels = [channels]
-
+async def manual_index(client: Client, message: Message):
+    """Select channel to index"""
+    channels = CHANNEL_LIST
     buttons = []
+    
     for ch in channels:
         try:
             chat = await client.get_chat(ch)
-            buttons.append(
-                [InlineKeyboardButton(chat.title, callback_data=f"index_select_{ch}")]
-            )
+            buttons.append([InlineKeyboardButton(chat.title, callback_data=f"index_select_{ch}")])
         except:
             continue
-
+    
     buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")])
+    await message.reply_text("**Select Channel:**", reply_markup=InlineKeyboardMarkup(buttons))
 
-    await message.reply_text(
-        "**Select Channel To Index:**",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
-
-# =========================================================
-# RECEIVE SKIP NUMBER
-# =========================================================
+# ==================== SKIP NUMBER ====================
 
 @Client.on_message(filters.private & filters.user(ADMIN_ID) & filters.text)
-async def receive_skip_number(client: Client, message: Message):
-
-    # ✅ FIX: Only block index-related commands, not all commands
+async def skip_number(client: Client, message: Message):
+    """Receive skip message ID"""
     if message.text.startswith("/"):
-        # Allow all commands to pass through to their respective handlers
         return
-
+    
     data = INDEX_TASKS.get(message.from_user.id)
     if not data or data.get("state") != "await_skip":
         return
-
+    
     channel_id = data["channel_id"]
     text = message.text.strip()
-
-    # Extract message ID
+    
+    # Extract ID from link or number
     if "t.me" in text:
-        parts = text.strip("/").split("/")
         try:
-            skip_id = int(parts[-1])
+            skip_id = int(text.strip("/").split("/")[-1])
         except:
-            return await message.reply_text("Invalid link.")
+            return await message.reply_text("Invalid link")
     else:
         if not text.isdigit():
-            return await message.reply_text("Invalid message ID.")
+            return await message.reply_text("Invalid ID")
         skip_id = int(text)
-
+    
     await message.delete()
-    msg_id = data.get("msg_id")
-    progress_msg = await client.get_messages(message.chat.id, msg_id)
-    await progress_msg.edit_text(
-        "⏳ Starting Indexing...",
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]]
-        )
+    progress = await client.get_messages(message.chat.id, data["msg_id"])
+    await progress.edit_text(
+        "⏳ Starting...",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]])
     )
-
+    
     INDEX_TASKS[message.from_user.id] = {
         "channel_id": channel_id,
         "skip_id": skip_id,
         "state": "indexing",
         "cancel": False,
-        "progress_msg": progress_msg
+        "progress_msg": progress
     }
-
+    
     asyncio.create_task(start_indexing(client, message.from_user.id))
 
-
-# =========================================================
-# INDEXING WORKER (IMPROVED LOGIC WITH PROPER END DETECTION)
-# =========================================================
+# ==================== INDEXING WORKER ====================
 
 async def start_indexing(client: Client, user_id: int):
-
-    print(f"[INDEX DEBUG] Starting indexing for user {user_id}")
-
+    """Index channel messages"""
     data = INDEX_TASKS.get(user_id)
     if not data:
         return
-
+    
     channel_id = data["channel_id"]
     skip_id = data["skip_id"]
-    progress_msg = data["progress_msg"]
-
-    saved = 0
-    duplicate = 0
-    deleted = 0
-    error = 0
-    count = 0
-
+    progress = data["progress_msg"]
+    
+    saved = duplicate = deleted = error = count = 0
     current_id = 1 if skip_id == 0 else skip_id + 1
-
     consecutive_missing = 0
-    max_missing_limit = 100  # Stop after 20 consecutive missing messages
-
-    # ✅ NEW: Track the highest message ID found to prevent infinite loop
-    last_valid_id = current_id - 1
+    max_missing = 100
     
     while True:
-
         if data.get("cancel"):
             INDEX_TASKS.pop(user_id, None)
             return
-
+        
         try:
             msg = await client.get_messages(channel_id, current_id)
         except FloodWait as e:
             await asyncio.sleep(e.value)
             continue
-        except Exception as e:
+        except:
             consecutive_missing += 1
             deleted += 1
             current_id += 1
-
-            # ✅ IMPROVED: Stop if we've gone too far past the last valid message
-            if consecutive_missing >= max_missing_limit:
-                print(f"[INDEX DEBUG] Stopping: {consecutive_missing} consecutive missing messages")
+            if consecutive_missing >= max_missing:
                 break
-
             continue
-
-        # ✅ IMPROVED: Check if message is empty or doesn't exist
+        
         if not msg or msg.empty:
             consecutive_missing += 1
             deleted += 1
             current_id += 1
-
-            if consecutive_missing >= max_missing_limit:
-                print(f"[INDEX DEBUG] Stopping: {consecutive_missing} consecutive empty messages")
+            if consecutive_missing >= max_missing:
                 break
-
             continue
-
-        # Reset missing counter when we find a valid message
+        
         consecutive_missing = 0
-        last_valid_id = current_id
-
+        
         try:
-            inserted = await save_media_message(msg)
-            if inserted:
+            if await save_media(msg):
                 saved += 1
             else:
                 duplicate += 1
-        except Exception as e:
+        except:
             error += 1
-            print(f"[INDEX DEBUG] Save error: {e}")
-
+        
         count += 1
         current_id += 1
-
-        # Sleep to avoid flooding
+        
         if count % 50 == 0:
             await asyncio.sleep(0)
-
-        # Update progress every 20 messages
+        
         if count % 20 == 0:
             try:
-                await progress_msg.edit_text(
-                    f"""📂 Indexing In Progress...
+                await progress.edit_text(
+                    f"""📂 Indexing...
 
 Processed: {count}
-
 ✅ Saved: {saved}
 ♻️ Duplicate: {duplicate}
 ❌ Deleted: {deleted}
 ⚠️ Errors: {error}
 
-Last Message ID: {current_id - 1}
-""",
-                    reply_markup=InlineKeyboardMarkup(
-                        [[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]]
-                    )
+ID: {current_id - 1}""",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="index_cancel")]])
                 )
             except:
                 pass
-
-    # ✅ IMPROVED: Final completion message with accurate stats
+    
     try:
-        await progress_msg.edit_text(
-            f"""✅ Indexing Completed!
+        await progress.edit_text(
+            f"""✅ Complete!
 
-Total Processed: {count}
-
+Total: {count}
 📁 Saved: {saved}
 ♻️ Duplicate: {duplicate}
 ❌ Deleted: {deleted}
-⚠️ Errors: {error}
-
-Last Message ID: {last_valid_id}
-""",
-            reply_markup=None  # Remove cancel button after completion
+⚠️ Errors: {error}""",
+            reply_markup=None
         )
-    except Exception as e:
-        print(f"[INDEX DEBUG] Error updating final message: {e}")
-
+    except:
+        pass
+    
     INDEX_TASKS.pop(user_id, None)
-    print(f"[INDEX DEBUG] Indexing completed for user {user_id}")
-
