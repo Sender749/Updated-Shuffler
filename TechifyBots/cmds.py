@@ -76,7 +76,7 @@ async def start_command(client, message):
     uid = message.from_user.id
     
     if await udb.is_user_banned(uid):
-        await message.reply("**🚫 Banned**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support", url=f"https://t.me/{ADMIN_USERNAME}")]]))
+        await message.reply("**🚫 You are banned from using this bot**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support", url=f"https://t.me/{ADMIN_USERNAME}")]]))
         return
     
     # Handle verification callback
@@ -115,8 +115,8 @@ async def start_command(client, message):
         caption=text.START.format(message.from_user.mention),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🎬 Get Video", callback_data="getvideo")],
-            [InlineKeyboardButton("🍿 Premium", callback_data="pro")],
-            [InlineKeyboardButton("ℹ️ About", callback_data="about"), InlineKeyboardButton("📚 Help", callback_data="help")]
+            [InlineKeyboardButton("🍿 𝖡𝗎𝗒 𝖲𝗎𝖻𝗌𝖼𝗋𝗂𝗉𝗍𝗂𝗈𝗇 🍾", callback_data="pro")],
+            [InlineKeyboardButton("ℹ️ Disclaimer", callback_data="about"), InlineKeyboardButton("📚 Help", callback_data="help")]
         ])
     )
 
@@ -190,11 +190,11 @@ async def send_video(client, message, uid=None):
     )
     
     if banned:
-        await message.reply("**🚫 Banned**")
+        await message.reply("**🚫 You are banned from using this bot**")
         return
     
     if limits.get("maintenance"):
-        await message.reply_text("**🛠️ Maintenance**")
+        await message.reply_text("**🛠️ Bot Under Maintenance — Back Soon!**")
         return
     
     if IS_FSUB and not await get_fsub(client, message):
@@ -204,17 +204,17 @@ async def send_video(client, message, uid=None):
     is_prime = user.get("plan") == "prime"
     
     if is_prime:
-        usage_text = "🌟 Prime"
+        usage_text = "🌟 User Plan : Prime"
     else:
         if IS_VERIFY:
             verified, is_second, is_third = await get_cached_verification(uid)
             
             if verified and not is_second and not is_third:
-                usage_text = "✅ Verified"
+                usage_text = "**Status : ✅ Verified**"
             else:
                 usage = await mdb.check_and_increment_usage(uid)
                 if usage["allowed"]:
-                    usage_text = f"📊 {usage['count']}/{usage['limit']}"
+                    usage_text = f"📊 Daily Limit : {usage['count']}/{usage['limit']}"
                 else:
                     await show_verify(client, message, uid, is_second, is_third)
                     return
@@ -223,7 +223,7 @@ async def send_video(client, message, uid=None):
             if not usage["allowed"]:
                 await message.reply_text(f"**🚫 Limit reached ({usage['limit']})\n\nUpgrade to Prime!**")
                 return
-            usage_text = f"📊 {usage['count']}/{usage['limit']}"
+            usage_text = f"📊 Daily Limit : {usage['count']}/{usage['limit']}"
     
     # Get video
     if "all" not in VIDEO_CACHE:
@@ -263,10 +263,10 @@ async def send_video(client, message, uid=None):
     if has_previous:
         buttons.append([
             InlineKeyboardButton("⬅️ Back", callback_data=f"prev_{uid}"),
-            InlineKeyboardButton("🎬 Next", callback_data="getvideo")
+            InlineKeyboardButton("➡️ Next", callback_data="getvideo")
         ])
     else:
-        buttons.append([InlineKeyboardButton("🎬 Next", callback_data="getvideo")])
+        buttons.append([InlineKeyboardButton("➡️ Next", callback_data="getvideo")])
     
     buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{uid}")])
     
@@ -352,6 +352,7 @@ async def auto_delete(client, cid, mid, uid):
             USER_ACTIVE_VIDEOS[uid].discard(mid)
             if not USER_ACTIVE_VIDEOS[uid]:
                 USER_ACTIVE_VIDEOS.pop(uid, None)
-                await client.send_message(cid, "✅ Video Deleted, due to inactivity.\n\nClick below button to get new video.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 More", callback_data="getvideo")]]))
+                await client.send_message(cid, "✅ Video Deleted, due to inactivity.\n\nClick below button to get new video.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get New Video", callback_data="getvideo")]]))
     except Exception as e:
         print(f"Delete error: {e}")
+
