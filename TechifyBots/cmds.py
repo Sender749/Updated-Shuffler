@@ -1,5 +1,5 @@
 from pyrogram import Client, filters
-from pyrogram.types import *
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaVideo
 from vars import *
 from Database.maindb import mdb
 from Database.userdb import udb
@@ -73,7 +73,7 @@ async def start_command(client, message):
     uid = message.from_user.id
     
     if await udb.is_user_banned(uid):
-        await message.reply("**🚫 You are banned from using this bot**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support", url=f"https://t.me/{ADMIN_USERNAME}")]]))
+        await message.reply("**🚫 Banned**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support", url=f"https://t.me/{ADMIN_USERNAME}")]]))
         return
     
     # Handle verification callback
@@ -187,11 +187,11 @@ async def send_video(client, message, uid=None):
     )
     
     if banned:
-        await message.reply("**🚫 You are banned from using this bot**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support", url=f"https://t.me/{ADMIN_USERNAME}")]]))
+        await message.reply("**🚫 Banned**")
         return
     
     if limits.get("maintenance"):
-        await message.reply_text("**🛠️ Bot Under Maintenance — Back Soon!**")
+        await message.reply_text("**🛠️ Maintenance**")
         return
     
     if IS_FSUB and not await get_fsub(client, message):
@@ -257,10 +257,10 @@ async def send_video(client, message, uid=None):
     if has_previous:
         buttons.append([
             InlineKeyboardButton("⬅️ Back", callback_data=f"previous_{file_id}"),
-            InlineKeyboardButton("➡️ Next", callback_data="getvideo")
+            InlineKeyboardButton("🎬 Next", callback_data="getvideo")
         ])
     else:
-        buttons.append([InlineKeyboardButton("➡️ Next", callback_data="getvideo")])
+        buttons.append([InlineKeyboardButton("🎬 Next", callback_data="getvideo")])
     
     buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{file_id}")])
     
@@ -346,8 +346,6 @@ async def auto_delete(client, cid, mid, uid):
             USER_ACTIVE_VIDEOS[uid].discard(mid)
             if not USER_ACTIVE_VIDEOS[uid]:
                 USER_ACTIVE_VIDEOS.pop(uid, None)
-                await client.send_message(cid, "✅ Video Deletd, due to inactivity.\n\nClick below button to get new video.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 More", callback_data="getvideo")]]))
+                await client.send_message(cid, "✅ Video Deleted, due to inactivity.\n\nClick below button to get new video.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 More", callback_data="getvideo")]]))
     except Exception as e:
         print(f"Delete error: {e}")
-
-
