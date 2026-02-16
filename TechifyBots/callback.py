@@ -91,6 +91,14 @@ async def callback_query_handler(client, query: CallbackQuery):
         elif query.data == "getvideo":
             await query.answer()
             await send_video(client, query.message, uid=query.from_user.id)
+        
+        elif query.data.startswith("previous_"):
+            await query.answer()
+            await handle_previous_video(client, query)
+        
+        elif query.data.startswith("share_"):
+            await query.answer()
+            await handle_share_video(client, query)
  
 
         elif query.data == "close":
@@ -99,3 +107,173 @@ async def callback_query_handler(client, query: CallbackQuery):
     except Exception as e:
         print(f"Callback error: {e}")
         await query.answer("⚠️ An error occurred. Try again later.", show_alert=True)
+
+# ==================== PREVIOUS VIDEO HANDLER ====================
+
+async def handle_previous_video(client: Client, query: CallbackQuery):
+    """Handle previous button click"""
+    from .cmds import get_cached_user_data, USER_ACTIVE_VIDEOS, auto_delete
+    from vars import DELETE_TIMER, PROTECT_CONTENT
+    from pyrogram.types import InputMediaVideo
+    
+    user_id = query.from_user.id
+    current_file_id = query.data.split("_", 1)[1]
+    
+    # Get previous video from watch history
+    prev_video = await mdb.get_previous_video(user_id, current_file_id)
+    
+    if not prev_video:
+        await query.answer("❌ No previous video in history", show_alert=True)
+        return
+    
+    # Get user data for caption
+    user = await get_cached_user_data(user_id)
+    is_prime = user.get("plan") == "prime"
+    
+    if is_prime:
+        usage_text = "🌟 Prime"
+    else:
+        usage = await mdb.check_and_increment_usage(user_id)
+        usage_text = f"📊 {usage['count']}/{usage['limit']}" if usage['allowed'] else "📊 Limit"
+    
+    mins = DELETE_TIMER // 60
+    caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}</b>"
+    
+    # Get updated watch history to check if there's another previous
+    history = await mdb.get_watch_history(user_id, limit=50)
+    
+    # Find index of the video we're about to show
+    prev_file_id = prev_video["file_id"]
+    current_index = None
+    for idx, item in enumerate(history):
+        if item["file_id"] == prev_file_id:
+            current_index = idx
+            break
+    
+    has_previous = current_index is not None and current_index + 1 < len(history)
+    
+    # Build buttons
+    buttons = []
+    if has_previous:
+        buttons.append([
+            InlineKeyboardButton("⬅️ Back", callback_data=f"previous_{prev_file_id}"),
+            InlineKeyboardButton("🎬 Next", callback_data="getvideo")
+        ])
+    else:
+        buttons.append([InlineKeyboardButton("🎬 Next", callback_data="getvideo")])
+    
+    buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{prev_file_id}")])
+    
+    try:
+        await query.message.edit_media(
+            InputMediaVideo(media=prev_file_id, caption=caption),
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    except Exception as e:
+        print(f"Previous video error: {e}")
+        await query.answer("⚠️ Failed to load previous video", show_alert=True)
+
+# ==================== SHARE VIDEO HANDLER ====================
+
+async def handle_share_video(client: Client, query: CallbackQuery):
+    """Handle share button click - generate single file link"""
+    import string
+    import random
+    from datetime import datetime
+    
+    file_id = query.data.split("_", 1)[1]
+    user_id = query.from_user.id
+    
+    # Generate unique link ID
+    link_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+    
+    # Determine media type
+    media_type = "video"  # Default to video since most content is video
+    if query.message.photo:
+        media_type = "photo"
+    elif query.message.document:
+        media_type = "document"
+    
+    # Store link data in database
+    await mdb.async_db["share_links"].insert_one({
+        "link_id": link_id,
+        "file_id": file_id,
+        "media_type": media_type,
+        "shared_by": user_id,
+        "created_at": datetime.now(),
+        "access_count": 0
+    })
+    
+    # Get bot username
+    bot_info = await client.get_me()
+    link = f"https://t.me/{bot_info.username}?start=share_{link_id}"
+    
+    # Send link to user
+    await query.message.reply_text(
+        f"🔗 **Share Link Generated!**\n\n"
+        f"`{link}`\n\n"
+        f"Anyone can access this file directly through this link (no verification needed).",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📋 Copy Link", url=link)
+        ]])
+    )
+    
+    await query.answer("✅ Share link generated!", show_alert=False)
+
+# ==================== HANDLE SHARE LINK ACCESS ====================
+
+async def handle_share_link_access(client: Client, message: Message, link_id: str):
+    """Handle when user accesses a share link - direct access without checks"""
+    from vars import PROTECT_CONTENT
+    
+    # Get link data from database
+    link_data = await mdb.async_db["share_links"].find_one({"link_id": link_id})
+    
+    if not link_data:
+        await message.reply_text("❌ Invalid or expired share link.")
+        return
+    
+    file_id = link_data["file_id"]
+    media_type = link_data["media_type"]
+    
+    # Increment access count
+    await mdb.async_db["share_links"].update_one(
+        {"link_id": link_id},
+        {"$inc": {"access_count": 1}}
+    )
+    
+    # Send file directly without any checks
+    try:
+        if media_type == "video":
+            await client.send_video(
+                message.chat.id,
+                file_id,
+                caption="🔗 **Shared Video**\n\nShared via link",
+                protect_content=PROTECT_CONTENT,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")
+                ]])
+            )
+        elif media_type == "photo":
+            await client.send_photo(
+                message.chat.id,
+                file_id,
+                caption="🔗 **Shared Photo**\n\nShared via link",
+                protect_content=PROTECT_CONTENT,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")
+                ]])
+            )
+        elif media_type == "document":
+            await client.send_document(
+                message.chat.id,
+                file_id,
+                caption="🔗 **Shared Document**\n\nShared via link",
+                protect_content=PROTECT_CONTENT,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")
+                ]])
+            )
+    except Exception as e:
+        print(f"Share link access error: {e}")
+        await message.reply_text("⚠️ Failed to load shared file.")
