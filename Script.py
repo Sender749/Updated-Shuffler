@@ -70,7 +70,11 @@ All payments are <b>non-refundable</b>, so please review your choice carefully b
 
 » /banlist — To check banned Users.
 
-» /stats — View detailed bot statistics.</b>"""
+» /stats — View detailed bot statistics.
+
+» /l — Start generating a shareable link for files.
+
+» /m_link — Generate link after collecting files.</b>"""
   
   HELP = """<b>𝖡𝗈𝗍 𝖣𝗂𝗌𝖼𝗅𝖺𝗂𝗆𝖾𝗋 & 𝖴𝗌𝖺𝗀𝖾 𝖦𝗎𝗂𝖽𝖾:</b>
 
