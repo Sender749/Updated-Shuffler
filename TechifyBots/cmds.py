@@ -82,6 +82,18 @@ async def start_command(client, message):
         if data.startswith("verify_"):
             await handle_verify(client, message, data)
             return
+        elif data.startswith("link_"):
+            # Handle multi-file link access
+            link_id = data.split("_", 1)[1]
+            from .link_generator import handle_link_access
+            await handle_link_access(client, message, link_id)
+            return
+        elif data.startswith("share_"):
+            # Handle single file share link access
+            link_id = data.split("_", 1)[1]
+            from .callback import handle_share_link_access
+            await handle_share_link_access(client, message, link_id)
+            return
     
     # Parallel checks
     fsub = get_fsub(client, message) if IS_FSUB else None
@@ -236,12 +248,40 @@ async def send_video(client, message, uid=None):
     mins = DELETE_TIMER // 60
     caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}</b>"
     
+    # Check if user has watch history for back button
+    history = await mdb.get_watch_history(uid, limit=2)
+    has_previous = len(history) > 0
+    
+    # Build buttons
+    buttons = []
+    if has_previous:
+        buttons.append([
+            InlineKeyboardButton("⬅️ Back", callback_data=f"previous_{file_id}"),
+            InlineKeyboardButton("🎬 Next", callback_data="getvideo")
+        ])
+    else:
+        buttons.append([InlineKeyboardButton("🎬 Next", callback_data="getvideo")])
+    
+    buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{file_id}")])
+    
     try:
         if message.video:
-            await message.edit_media(InputMediaVideo(media=file_id, caption=caption), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Next", callback_data="getvideo")]]))
+            await message.edit_media(
+                InputMediaVideo(media=file_id, caption=caption), 
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
             sent = message
         else:
-            sent = await client.send_video(cid, file_id, caption=caption, protect_content=PROTECT_CONTENT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Next", callback_data="getvideo")]]))
+            sent = await client.send_video(
+                cid, 
+                file_id, 
+                caption=caption, 
+                protect_content=PROTECT_CONTENT, 
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+        
+        # Add to watch history
+        await mdb.add_to_watch_history(uid, file_id, "video")
         
         USER_ACTIVE_VIDEOS.setdefault(uid, set()).add(sent.id)
         asyncio.create_task(auto_delete(client, cid, sent.id, uid))
@@ -287,6 +327,17 @@ async def auto_delete(client, cid, mid, uid):
     """Auto-delete video"""
     try:
         await asyncio.sleep(DELETE_TIMER)
+        
+        # Get the file_id before deleting
+        try:
+            msg = await client.get_messages(cid, mid)
+            if msg.video:
+                file_id = msg.video.file_id
+                # Clear this file from all users' watch history
+                await mdb.clear_watch_history_for_file(file_id)
+        except:
+            pass
+        
         try:
             await client.delete_messages(cid, mid)
         except:
