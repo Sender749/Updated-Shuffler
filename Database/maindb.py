@@ -302,6 +302,53 @@ class Database:
         await self.async_video_collection.delete_one({"video_id": video_id})
         return True
 
+# ==================== WATCH HISTORY ====================
+
+    async def add_to_watch_history(self, user_id: int, file_id: str, media_type: str):
+        """Add a file to user's watch history"""
+        await self.async_db["watch_history"].update_one(
+            {"user_id": user_id},
+            {
+                "$push": {
+                    "history": {
+                        "$each": [{
+                            "file_id": file_id,
+                            "media_type": media_type,
+                            "watched_at": datetime.now()
+                        }],
+                        "$position": 0,
+                        "$slice": 50  # Keep only last 50 videos
+                    }
+                }
+            },
+            upsert=True
+        )
+    
+    async def get_watch_history(self, user_id: int, limit: int = 50):
+        """Get user's watch history"""
+        doc = await self.async_db["watch_history"].find_one({"user_id": user_id})
+        if doc and "history" in doc:
+            return doc["history"][:limit]
+        return []
+    
+    async def get_previous_video(self, user_id: int, current_file_id: str):
+        """Get the previous video from watch history"""
+        history = await self.get_watch_history(user_id, limit=50)
+        
+        # Find current video in history
+        for idx, item in enumerate(history):
+            if item["file_id"] == current_file_id and idx + 1 < len(history):
+                return history[idx + 1]
+        
+        return None
+    
+    async def clear_watch_history_for_file(self, file_id: str):
+        """Clear watch history entries for a deleted file"""
+        await self.async_db["watch_history"].update_many(
+            {},
+            {"$pull": {"history": {"file_id": file_id}}}
+        )
+
 # ==================================================================
 
 def format_remaining_time(expiry):
