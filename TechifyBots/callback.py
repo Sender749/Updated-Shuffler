@@ -3,7 +3,7 @@ from pyrogram import Client
 from Script import text
 from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT
 from Database.maindb import mdb
-from .cmds import send_video, get_cached_user_data, USER_ACTIVE_VIDEOS
+from .cmds import send_video, get_cached_user_data, USER_ACTIVE_VIDEOS, USER_CURRENT_VIDEO
 from .index import INDEX_TASKS, start_indexing
 import asyncio
 
@@ -92,7 +92,7 @@ async def callback_query_handler(client, query: CallbackQuery):
             await query.answer()
             await send_video(client, query.message, uid=query.from_user.id)
         
-        elif query.data.startswith("previous_"):
+        elif query.data.startswith("prev_"):
             await query.answer()
             await handle_previous_video(client, query)
         
@@ -113,7 +113,13 @@ async def callback_query_handler(client, query: CallbackQuery):
 async def handle_previous_video(client: Client, query: CallbackQuery):
     """Handle previous button click"""
     user_id = query.from_user.id
-    current_file_id = query.data.split("_", 1)[1]
+    
+    # Get current file_id from USER_CURRENT_VIDEO
+    current_file_id = USER_CURRENT_VIDEO.get(user_id)
+    
+    if not current_file_id:
+        await query.answer("❌ No current video found", show_alert=True)
+        return
     
     # Get previous video from watch history
     prev_video = await mdb.get_previous_video(user_id, current_file_id)
@@ -130,8 +136,11 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
         usage_text = "🌟 Prime"
     else:
         # Don't increment usage for going back
-        usage = await mdb.check_and_increment_usage(user_id)
-        usage_text = f"📊 {usage.get('count', 0)}/{usage.get('limit', 0)}" if usage.get('allowed') else "📊 Limit"
+        from Database.userdb import udb
+        user_data = await mdb.get_user(user_id)
+        daily_count = user_data.get("daily_count", 0)
+        limits = await mdb.get_global_limits()
+        usage_text = f"📊 {daily_count}/{limits['free_limit']}"
     
     mins = DELETE_TIMER // 60
     caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}</b>"
@@ -141,6 +150,10 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
     
     # Find index of the video we're about to show
     prev_file_id = prev_video["file_id"]
+    
+    # Update USER_CURRENT_VIDEO to the previous video
+    USER_CURRENT_VIDEO[user_id] = prev_file_id
+    
     current_index = None
     for idx, item in enumerate(history):
         if item["file_id"] == prev_file_id:
@@ -153,13 +166,13 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
     buttons = []
     if has_previous:
         buttons.append([
-            InlineKeyboardButton("⬅️ Back", callback_data=f"previous_{prev_file_id}"),
+            InlineKeyboardButton("⬅️ Back", callback_data=f"prev_{user_id}"),
             InlineKeyboardButton("🎬 Next", callback_data="getvideo")
         ])
     else:
         buttons.append([InlineKeyboardButton("🎬 Next", callback_data="getvideo")])
     
-    buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{prev_file_id}")])
+    buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{user_id}")])
     
     try:
         # Handle different media types
@@ -174,7 +187,6 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
             # If not video, delete current and send new
             await query.message.delete()
             if media_type == "photo":
-                from pyrogram.types import InputMediaPhoto
                 await client.send_photo(
                     query.message.chat.id,
                     prev_file_id,
@@ -202,8 +214,14 @@ async def handle_share_video(client: Client, query: CallbackQuery):
     import random
     from datetime import datetime
     
-    file_id = query.data.split("_", 1)[1]
     user_id = query.from_user.id
+    
+    # Get current file_id from USER_CURRENT_VIDEO
+    file_id = USER_CURRENT_VIDEO.get(user_id)
+    
+    if not file_id:
+        await query.answer("❌ No current video found", show_alert=True)
+        return
     
     # Generate unique link ID
     link_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
