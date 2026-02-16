@@ -27,6 +27,9 @@ BOT_INFO_CACHE = None
 VERIFICATION_CACHE = {}
 VERIFICATION_CACHE_TTL = 30
 
+# Current video tracking for previous/share buttons
+USER_CURRENT_VIDEO = {}
+
 # ==================== CACHE HELPERS ====================
 
 async def get_cached_user_data(user_id: int):
@@ -248,21 +251,24 @@ async def send_video(client, message, uid=None):
     mins = DELETE_TIMER // 60
     caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}</b>"
     
+    # Store current video file_id for this user (for previous/share buttons)
+    USER_CURRENT_VIDEO[uid] = file_id
+    
     # Check if user has watch history for back button
     history = await mdb.get_watch_history(uid, limit=2)
     has_previous = len(history) > 0
     
-    # Build buttons
+    # Build buttons - use simple callback data
     buttons = []
     if has_previous:
         buttons.append([
-            InlineKeyboardButton("⬅️ Back", callback_data=f"previous_{file_id}"),
+            InlineKeyboardButton("⬅️ Back", callback_data=f"prev_{uid}"),
             InlineKeyboardButton("🎬 Next", callback_data="getvideo")
         ])
     else:
         buttons.append([InlineKeyboardButton("🎬 Next", callback_data="getvideo")])
     
-    buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{file_id}")])
+    buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{uid}")])
     
     try:
         if message.video:
