@@ -1,16 +1,14 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from vars import ADMIN_ID
+from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT
 from Database.maindb import mdb
 import string
 import random
 from datetime import datetime
+import asyncio
 
 # Store temporary link generation sessions
 LINK_SESSIONS = {}
-
-# Store generated links with their files
-GENERATED_LINKS = {}
 
 def generate_link_id():
     """Generate a unique 8-character link ID"""
@@ -164,7 +162,7 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
         return
     
     # Check user plan
-    from .cmds import get_cached_user_data, get_cached_verification, show_verify
+    from .cmds import get_cached_user_data, get_cached_verification, show_verify, USER_ACTIVE_VIDEOS, auto_delete
     from .fsub import get_fsub
     from vars import IS_FSUB, IS_VERIFY
     from Database.userdb import udb
@@ -211,27 +209,42 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
     )
     
     # Send all files to user
-    from vars import DELETE_TIMER, PROTECT_CONTENT
-    import asyncio
-    
     sent_messages = []
+    
+    # Determine usage text
+    mins = DELETE_TIMER // 60
+    if is_prime:
+        usage_text = "🌟 Prime"
+    else:
+        usage_text = "📊 Link Access"
     
     for idx, file_info in enumerate(files):
         file_type = file_info["type"]
         file_id = file_info["file_id"]
-        caption = file_info.get("caption", "")
+        original_caption = file_info.get("caption", "")
         
-        # Add navigation buttons for last file
+        # For last file, add buttons and watch history
         if idx == len(files) - 1:
-            from .cmds import USER_ACTIVE_VIDEOS, auto_delete
-            
-            mins = DELETE_TIMER // 60
-            usage_text = "🌟 Prime" if is_prime else f"📊 Link Access"
+            # Build caption with delete timer
             full_caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}</b>"
-            if caption:
-                full_caption += f"\n\n{caption}"
+            if original_caption:
+                full_caption += f"\n\n{original_caption}"
             
-            buttons = [[InlineKeyboardButton("🎬 Get Next Video", callback_data="getvideo")]]
+            # Check watch history for back button
+            history = await mdb.get_watch_history(user_id, limit=2)
+            has_previous = len(history) > 0
+            
+            # Build buttons
+            buttons = []
+            if has_previous:
+                buttons.append([
+                    InlineKeyboardButton("⬅️ Back", callback_data=f"previous_{file_id}"),
+                    InlineKeyboardButton("🎬 Next", callback_data="getvideo")
+                ])
+            else:
+                buttons.append([InlineKeyboardButton("🎬 Next", callback_data="getvideo")])
+            
+            buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{file_id}")])
             
             try:
                 if file_type == "video":
@@ -259,33 +272,36 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
                         reply_markup=InlineKeyboardMarkup(buttons)
                     )
                 
+                # Add to watch history
+                await mdb.add_to_watch_history(user_id, file_id, file_type)
+                
                 USER_ACTIVE_VIDEOS.setdefault(user_id, set()).add(sent.id)
                 asyncio.create_task(auto_delete(client, message.chat.id, sent.id, user_id))
                 sent_messages.append(sent.id)
             except Exception as e:
-                print(f"Error sending file: {e}")
+                print(f"Error sending last file: {e}")
         else:
-            # Send without buttons
+            # Send files without buttons (not last file)
             try:
                 if file_type == "video":
                     sent = await client.send_video(
                         message.chat.id,
                         file_id,
-                        caption=caption,
+                        caption=original_caption,
                         protect_content=PROTECT_CONTENT
                     )
                 elif file_type == "photo":
                     sent = await client.send_photo(
                         message.chat.id,
                         file_id,
-                        caption=caption,
+                        caption=original_caption,
                         protect_content=PROTECT_CONTENT
                     )
                 elif file_type == "document":
                     sent = await client.send_document(
                         message.chat.id,
                         file_id,
-                        caption=caption,
+                        caption=original_caption,
                         protect_content=PROTECT_CONTENT
                     )
                 
