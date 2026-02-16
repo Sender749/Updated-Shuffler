@@ -257,10 +257,10 @@ async def send_video(client, message, uid=None):
     if has_previous:
         buttons.append([
             InlineKeyboardButton("⬅️ Back", callback_data=f"previous_{file_id}"),
-            InlineKeyboardButton("🎬 Next", callback_data="getvideo")
+            InlineKeyboardButton("➡️ Next", callback_data="getvideo")
         ])
     else:
-        buttons.append([InlineKeyboardButton("🎬 Next", callback_data="getvideo")])
+        buttons.append([InlineKeyboardButton("➡️ Next", callback_data="getvideo")])
     
     buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{file_id}")])
     
@@ -349,3 +349,4 @@ async def auto_delete(client, cid, mid, uid):
                 await client.send_message(cid, "✅ Video Deletd, due to inactivity.\n\nClick below button to get new video.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 More", callback_data="getvideo")]]))
     except Exception as e:
         print(f"Delete error: {e}")
+
