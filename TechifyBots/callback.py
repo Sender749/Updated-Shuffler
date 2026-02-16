@@ -1,4 +1,4 @@
-from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaVideo
+from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaVideo, Message
 from pyrogram import Client
 from Script import text
 from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT
