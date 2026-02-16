@@ -1,13 +1,12 @@
-from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaVideo, Message
+from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaVideo
 from pyrogram import Client
 from Script import text
 from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT
 from Database.maindb import mdb
-from .cmds import send_video, get_cached_user_data, USER_ACTIVE_VIDEOS, auto_delete
+from .cmds import send_video, get_cached_user_data, USER_ACTIVE_VIDEOS
 from .index import INDEX_TASKS, start_indexing
-import asyncio, string, random 
-from datetime import datetime
-    
+import asyncio
+
 @Client.on_callback_query()
 async def callback_query_handler(client, query: CallbackQuery):
     try:
@@ -112,7 +111,7 @@ async def callback_query_handler(client, query: CallbackQuery):
 # ==================== PREVIOUS VIDEO HANDLER ====================
 
 async def handle_previous_video(client: Client, query: CallbackQuery):
-    
+    """Handle previous button click"""
     user_id = query.from_user.id
     current_file_id = query.data.split("_", 1)[1]
     
@@ -130,8 +129,9 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
     if is_prime:
         usage_text = "🌟 Prime"
     else:
+        # Don't increment usage for going back
         usage = await mdb.check_and_increment_usage(user_id)
-        usage_text = f"📊 {usage['count']}/{usage['limit']}" if usage['allowed'] else "📊 Limit"
+        usage_text = f"📊 {usage.get('count', 0)}/{usage.get('limit', 0)}" if usage.get('allowed') else "📊 Limit"
     
     mins = DELETE_TIMER // 60
     caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}</b>"
@@ -154,18 +154,42 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
     if has_previous:
         buttons.append([
             InlineKeyboardButton("⬅️ Back", callback_data=f"previous_{prev_file_id}"),
-            InlineKeyboardButton("➡️ Next", callback_data="getvideo")
+            InlineKeyboardButton("🎬 Next", callback_data="getvideo")
         ])
     else:
-        buttons.append([InlineKeyboardButton("➡️ Next", callback_data="getvideo")])
+        buttons.append([InlineKeyboardButton("🎬 Next", callback_data="getvideo")])
     
     buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{prev_file_id}")])
     
     try:
-        await query.message.edit_media(
-            InputMediaVideo(media=prev_file_id, caption=caption),
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        # Handle different media types
+        media_type = prev_video.get("media_type", "video")
+        
+        if media_type == "video":
+            await query.message.edit_media(
+                InputMediaVideo(media=prev_file_id, caption=caption),
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+        else:
+            # If not video, delete current and send new
+            await query.message.delete()
+            if media_type == "photo":
+                from pyrogram.types import InputMediaPhoto
+                await client.send_photo(
+                    query.message.chat.id,
+                    prev_file_id,
+                    caption=caption,
+                    protect_content=PROTECT_CONTENT,
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+            elif media_type == "document":
+                await client.send_document(
+                    query.message.chat.id,
+                    prev_file_id,
+                    caption=caption,
+                    protect_content=PROTECT_CONTENT,
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
     except Exception as e:
         print(f"Previous video error: {e}")
         await query.answer("⚠️ Failed to load previous video", show_alert=True)
@@ -173,19 +197,25 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
 # ==================== SHARE VIDEO HANDLER ====================
 
 async def handle_share_video(client: Client, query: CallbackQuery):
-
+    """Handle share button click - generate single file link"""
+    import string
+    import random
+    from datetime import datetime
+    
     file_id = query.data.split("_", 1)[1]
     user_id = query.from_user.id
     
     # Generate unique link ID
     link_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
     
-    # Determine media type
-    media_type = "video"  # Default to video since most content is video
+    # Determine media type from message
+    media_type = "video"  # Default to video
     if query.message.photo:
         media_type = "photo"
     elif query.message.document:
         media_type = "document"
+    elif query.message.video:
+        media_type = "video"
     
     # Store link data in database
     await mdb.async_db["share_links"].insert_one({
@@ -205,7 +235,7 @@ async def handle_share_video(client: Client, query: CallbackQuery):
     await query.message.reply_text(
         f"🔗 **Share Link Generated!**\n\n"
         f"`{link}`\n\n"
-        f"Share with your buddies 😉.",
+        f"Anyone can access this file directly through this link (no verification needed).",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("📋 Copy Link", url=link)
         ]])
@@ -215,7 +245,7 @@ async def handle_share_video(client: Client, query: CallbackQuery):
 
 # ==================== HANDLE SHARE LINK ACCESS ====================
 
-async def handle_share_link_access(client: Client, message: Message, link_id: str):
+async def handle_share_link_access(client: Client, message, link_id: str):
     """Handle when user accesses a share link - direct access without checks"""
     
     # Get link data from database
