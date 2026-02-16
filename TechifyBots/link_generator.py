@@ -162,7 +162,7 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
         return
     
     # Check user plan
-    from .cmds import get_cached_user_data, get_cached_verification, show_verify, USER_ACTIVE_VIDEOS, auto_delete
+    from .cmds import get_cached_user_data, get_cached_verification, show_verify, USER_ACTIVE_VIDEOS, auto_delete, USER_CURRENT_VIDEO
     from .fsub import get_fsub
     from vars import IS_FSUB, IS_VERIFY
     from Database.userdb import udb
@@ -230,21 +230,24 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
             if original_caption:
                 full_caption += f"\n\n{original_caption}"
             
+            # Store current video for this user
+            USER_CURRENT_VIDEO[user_id] = file_id
+            
             # Check watch history for back button
             history = await mdb.get_watch_history(user_id, limit=2)
             has_previous = len(history) > 0
             
-            # Build buttons
+            # Build buttons with short callback data
             buttons = []
             if has_previous:
                 buttons.append([
-                    InlineKeyboardButton("⬅️ Back", callback_data=f"previous_{file_id}"),
+                    InlineKeyboardButton("⬅️ Back", callback_data=f"prev_{user_id}"),
                     InlineKeyboardButton("🎬 Next", callback_data="getvideo")
                 ])
             else:
                 buttons.append([InlineKeyboardButton("🎬 Next", callback_data="getvideo")])
             
-            buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{file_id}")])
+            buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{user_id}")])
             
             try:
                 if file_type == "video":
