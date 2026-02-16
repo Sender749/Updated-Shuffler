@@ -1,12 +1,13 @@
-from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaVideo
 from pyrogram import Client
 from Script import text
-from vars import ADMIN_ID
+from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT
 from Database.maindb import mdb
-from .cmds import send_video
+from .cmds import send_video, get_cached_user_data, USER_ACTIVE_VIDEOS, auto_delete
 from .index import INDEX_TASKS, start_indexing
-import asyncio
-
+import asyncio, string, random 
+from datetime import datetime
+    
 @Client.on_callback_query()
 async def callback_query_handler(client, query: CallbackQuery):
     try:
@@ -111,10 +112,6 @@ async def callback_query_handler(client, query: CallbackQuery):
 # ==================== PREVIOUS VIDEO HANDLER ====================
 
 async def handle_previous_video(client: Client, query: CallbackQuery):
-    """Handle previous button click"""
-    from .cmds import get_cached_user_data, USER_ACTIVE_VIDEOS, auto_delete
-    from vars import DELETE_TIMER, PROTECT_CONTENT
-    from pyrogram.types import InputMediaVideo
     
     user_id = query.from_user.id
     current_file_id = query.data.split("_", 1)[1]
@@ -157,10 +154,10 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
     if has_previous:
         buttons.append([
             InlineKeyboardButton("⬅️ Back", callback_data=f"previous_{prev_file_id}"),
-            InlineKeyboardButton("🎬 Next", callback_data="getvideo")
+            InlineKeyboardButton("➡️ Next", callback_data="getvideo")
         ])
     else:
-        buttons.append([InlineKeyboardButton("🎬 Next", callback_data="getvideo")])
+        buttons.append([InlineKeyboardButton("➡️ Next", callback_data="getvideo")])
     
     buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{prev_file_id}")])
     
@@ -176,11 +173,7 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
 # ==================== SHARE VIDEO HANDLER ====================
 
 async def handle_share_video(client: Client, query: CallbackQuery):
-    """Handle share button click - generate single file link"""
-    import string
-    import random
-    from datetime import datetime
-    
+
     file_id = query.data.split("_", 1)[1]
     user_id = query.from_user.id
     
@@ -212,7 +205,7 @@ async def handle_share_video(client: Client, query: CallbackQuery):
     await query.message.reply_text(
         f"🔗 **Share Link Generated!**\n\n"
         f"`{link}`\n\n"
-        f"Anyone can access this file directly through this link (no verification needed).",
+        f"Share with your buddies 😉.",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("📋 Copy Link", url=link)
         ]])
@@ -224,7 +217,6 @@ async def handle_share_video(client: Client, query: CallbackQuery):
 
 async def handle_share_link_access(client: Client, message: Message, link_id: str):
     """Handle when user accesses a share link - direct access without checks"""
-    from vars import PROTECT_CONTENT
     
     # Get link data from database
     link_data = await mdb.async_db["share_links"].find_one({"link_id": link_id})
