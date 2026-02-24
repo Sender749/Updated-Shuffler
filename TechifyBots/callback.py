@@ -5,6 +5,7 @@ from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT
 from Database.maindb import mdb
 from .cmds import send_video, get_cached_user_data, USER_ACTIVE_VIDEOS, USER_CURRENT_VIDEO
 from .index import INDEX_TASKS, start_indexing
+from .link_generator import SCREENSHOT_SESSIONS, show_screenshot, generate_screenshots, post_screenshot_to_channel
 import asyncio, string, random
 from datetime import datetime
 
@@ -104,6 +105,95 @@ async def callback_query_handler(client, query: CallbackQuery):
 
         elif query.data == "close":
             await query.message.delete()
+
+        # ==================== SCREENSHOT NAVIGATION ====================
+
+        elif query.data == "ss_noop":
+            await query.answer()
+
+        elif query.data.startswith("ss_next_"):
+            await query.answer()
+            uid = int(query.data.split("ss_next_")[1])
+            if query.from_user.id != ADMIN_ID:
+                await query.answer("❌ Not allowed", show_alert=True)
+                return
+            ss = SCREENSHOT_SESSIONS.get(uid)
+            if not ss:
+                await query.answer("❌ Session expired", show_alert=True)
+                return
+            total = len(ss["screenshots"])
+            ss["current_index"] = (ss["current_index"] + 1) % total
+            await show_screenshot(client, query.message.chat.id, uid)
+
+        elif query.data.startswith("ss_back_"):
+            await query.answer()
+            uid = int(query.data.split("ss_back_")[1])
+            if query.from_user.id != ADMIN_ID:
+                await query.answer("❌ Not allowed", show_alert=True)
+                return
+            ss = SCREENSHOT_SESSIONS.get(uid)
+            if not ss:
+                await query.answer("❌ Session expired", show_alert=True)
+                return
+            total = len(ss["screenshots"])
+            ss["current_index"] = (ss["current_index"] - 1) % total
+            await show_screenshot(client, query.message.chat.id, uid)
+
+        elif query.data.startswith("ss_custom_"):
+            await query.answer()
+            uid = int(query.data.split("ss_custom_")[1])
+            if query.from_user.id != ADMIN_ID:
+                await query.answer("❌ Not allowed", show_alert=True)
+                return
+            ss = SCREENSHOT_SESSIONS.get(uid)
+            if not ss:
+                await query.answer("❌ Session expired", show_alert=True)
+                return
+            ss["state"] = "awaiting_custom_photo"
+            try:
+                await query.message.reply_text(
+                    "📸 **Send your custom photo** to use as the screenshot.\n\n"
+                    "It will replace/insert at the current position."
+                )
+            except:
+                pass
+
+        elif query.data.startswith("ss_gen_"):
+            await query.answer("🔄 Generating more screenshots…", show_alert=False)
+            uid = int(query.data.split("ss_gen_")[1])
+            if query.from_user.id != ADMIN_ID:
+                return
+            ss = SCREENSHOT_SESSIONS.get(uid)
+            if not ss:
+                await query.answer("❌ Session expired", show_alert=True)
+                return
+            try:
+                msg = await query.message.reply_text("⏳ Generating more screenshots, please wait…")
+                new_shots = await generate_screenshots(
+                    client, query.message.chat.id,
+                    ss["source_files"],
+                    ss["used_timestamps"],
+                    max_shots=20
+                )
+                if new_shots:
+                    ss["screenshots"].extend(new_shots)
+                    ss["current_index"] = len(ss["screenshots"]) - len(new_shots)
+                    await msg.edit_text(f"✅ {len(new_shots)} new screenshot(s) added!")
+                    await asyncio.sleep(1)
+                    await msg.delete()
+                    await show_screenshot(client, query.message.chat.id, uid)
+                else:
+                    await msg.edit_text("❌ Could not generate new screenshots (no more unique frames).")
+            except Exception as e:
+                print(f"ss_gen error: {e}")
+
+        elif query.data.startswith("ss_send_"):
+            await query.answer()
+            uid = int(query.data.split("ss_send_")[1])
+            if query.from_user.id != ADMIN_ID:
+                await query.answer("❌ Not allowed", show_alert=True)
+                return
+            await post_screenshot_to_channel(client, query.message.chat.id, uid)
 
     except Exception as e:
         print(f"Callback error: {e}")
