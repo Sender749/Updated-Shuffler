@@ -244,7 +244,7 @@ async def send_video(client, message, uid=None):
     video = random.choice(available)
     USER_RECENT_VIDEOS.setdefault(uid, set()).add(video["video_id"])
     if len(USER_RECENT_VIDEOS[uid]) > 10:
-        USER_RECENT_VIDEOS[uid].pop()
+        USER_RECENT_VIDEOS[uid] = set()  # reset when limit hit
     
     # Send video
     file_id = video["file_id"]
