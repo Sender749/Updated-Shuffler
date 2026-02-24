@@ -192,9 +192,14 @@ async def delete_all_videos_command(client, message):
 
 @Client.on_message(filters.command("delete") & filters.private & filters.user(ADMIN_ID))
 async def delete_video_by_id_command(client, message):
-    if len(message.command) < 2:return
-    await message.reply_text("⚠️ Please provide a video ID to delete.")
-    video_id = int(message.command[1])
+    if len(message.command) < 2:
+        await message.reply_text("⚠️ Please provide a video ID to delete.\nUsage: /delete <video_id>")
+        return
+    try:
+        video_id = int(message.command[1])
+    except ValueError:
+        await message.reply_text("⚠️ Invalid video ID. Please provide a valid integer.")
+        return
     deleted = await mdb.delete_video_by_id(video_id)
     if deleted:
         await message.reply_text(f"✅ Deleted video with ID `{video_id}`")
