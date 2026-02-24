@@ -21,6 +21,7 @@ AUTH_CHANNELS = list(map(int, os.environ.get("AUTH_CHANNEL", "-1002856477031").s
 DELETE_TIMER = int(os.getenv("DELETE_TIMER", "300"))  # seconds (default 5 minutes)
 PROTECT_CONTENT = os.getenv("PROTECT_CONTENT", "True").lower() == "true"
 FREE_LIMIT = int(os.getenv("FREE_LIMIT", "10"))
+POST_CHANNEL = int(os.getenv("POST_CHANNEL", "0"))  # Channel ID where screenshots are posted
 
 # Verification Settings
 IS_VERIFY = os.getenv("IS_VERIFY", "True").lower() == "true"  # Enable/Disable verification
