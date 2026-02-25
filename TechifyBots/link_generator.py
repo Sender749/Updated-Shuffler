@@ -126,6 +126,7 @@ async def collect_files(client: Client, message: Message):
             return
 
         session["files"].append(file_info)
+        session.setdefault("file_msg_ids", []).append(message.id)
         count = len(session["files"])
         chat_id = session["count_chat_id"]
         old_msg_id = session.get("count_msg_id")
@@ -177,6 +178,12 @@ async def generate_multi_link(client: Client, message: Message):
     if not session["files"]:
         await message.reply_text("❌ No files collected. Send files first.")
         return
+    file_msg_ids = session.get("file_msg_ids", [])
+    for mid in file_msg_ids:
+        try:
+            await client.delete_messages(message.chat.id, mid)
+        except:
+            pass
 
     # Delete the count message and use /m_link message as status carrier
     count_msg_id = session.get("count_msg_id")
@@ -568,7 +575,10 @@ async def _handle_custom_photo(client: Client, message: Message, user_id: int, s
     # Edit nav message to show new screenshot
     chat_id = ss_session.get("nav_chat_id", message.chat.id)
     await show_screenshot(client, chat_id, user_id)
-
+    try:
+        await message.delete()
+    except:
+        pass
 
 # ==================== POST TO CHANNEL ====================
 
@@ -613,6 +623,13 @@ async def post_screenshot_to_channel(client: Client, chat_id: int, user_id: int,
                 shutil.rmtree(d, ignore_errors=True)
             except Exception as e:
                 print(f"[cleanup] failed to remove dir {d}: {e}")
+        nav_msg_id = ss_session.get("nav_msg_id")
+        nav_chat_id = ss_session.get("nav_chat_id")
+        if nav_msg_id:
+            try:
+                await client.delete_messages(nav_chat_id, nav_msg_id)
+            except:
+                pass
         SCREENSHOT_SESSIONS.pop(user_id, None)
         if query:
             await query.answer("✅ Posted to channel!", show_alert=True)
