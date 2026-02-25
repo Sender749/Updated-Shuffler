@@ -6,7 +6,7 @@ import string
 import random
 import os
 import asyncio
-import tempfile
+import tempfile, shutil
 from datetime import datetime
 
 # Store temporary link generation sessions
@@ -600,6 +600,20 @@ async def post_screenshot_to_channel(client: Client, chat_id: int, user_id: int,
             caption="📥 **Click the button below to get the files!**",
             reply_markup=markup,
         )
+        screenshots = ss_session.get("screenshots", [])
+        temp_dirs = set()
+        for path in screenshots:
+            try:
+                if os.path.exists(path):
+                    temp_dirs.add(os.path.dirname(path))
+                except Exception:
+                    pass
+        for d in temp_dirs:
+            try:
+                shutil.rmtree(d, ignore_errors=True)
+            except Exception as e:
+                print(f"[cleanup] failed to remove dir {d}: {e}")
+        SCREENSHOT_SESSIONS.pop(user_id, None)
         if query:
             await query.answer("✅ Posted to channel!", show_alert=True)
         else:
