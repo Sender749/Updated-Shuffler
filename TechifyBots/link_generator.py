@@ -606,8 +606,8 @@ async def post_screenshot_to_channel(client: Client, chat_id: int, user_id: int,
             try:
                 if os.path.exists(path):
                     temp_dirs.add(os.path.dirname(path))
-                except Exception:
-                    pass
+            except Exception:
+                pass
         for d in temp_dirs:
             try:
                 shutil.rmtree(d, ignore_errors=True)
