@@ -607,7 +607,7 @@ async def post_screenshot_to_channel(client: Client, chat_id: int, user_id: int,
         await client.send_photo(
             POST_CHANNEL,
             photo=photo_path,
-            caption="📥 **Click the button below to get the files!**",
+            caption="✨ **Here is your link** 👇",
             reply_markup=markup,
         )
         screenshots = ss_session.get("screenshots", [])
