@@ -78,6 +78,8 @@ async def start_command(client, message):
     if await udb.is_user_banned(uid):
         await message.reply("**🚫 You are banned from using this bot**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support", url=f"https://t.me/{ADMIN_USERNAME}")]]))
         return
+    if IS_FSUB and not await get_fsub(client, message):
+        return
     
     # Handle verification callback
     if len(message.command) > 1:
@@ -97,15 +99,7 @@ async def start_command(client, message):
             from .callback import handle_share_link_access
             await handle_share_link_access(client, message, link_id)
             return
-    
-    # Parallel checks
-    fsub = get_fsub(client, message) if IS_FSUB else None
     user_check = udb.get_user(uid)
-    
-    if IS_FSUB and not await fsub:
-        return
-    
-    # Register new user async
     if not await user_check:
         asyncio.create_task(register_user(client, message))
     
@@ -355,4 +349,5 @@ async def auto_delete(client, cid, mid, uid):
                 await client.send_message(cid, "✅ Video Deleted, due to inactivity.\n\nClick below button to get new video.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get New Video", callback_data="getvideo")]]))
     except Exception as e:
         print(f"Delete error: {e}")
+
 
