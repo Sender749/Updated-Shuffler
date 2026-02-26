@@ -1,14 +1,16 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
-from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT, POST_CHANNEL
+from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT, POST_CHANNEL, IS_FSUB, IS_VERIFY
 from Database.maindb import mdb
+from Database.userdb import udb
+from .cmds import *
 import string
 import random
 import os
 import asyncio
 import tempfile, shutil
 from datetime import datetime
-
+    
 # Store temporary link generation sessions
 LINK_SESSIONS = {}
 
@@ -659,19 +661,8 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
         await message.reply_text("❌ No files found in this link.")
         return
 
-    from .cmds import (
-        get_cached_user_data, get_cached_verification, show_verify,
-        USER_ACTIVE_VIDEOS, auto_delete, USER_CURRENT_VIDEO,
-    )
-    from .fsub import get_fsub
-    from vars import IS_FSUB, IS_VERIFY
-    from Database.userdb import udb
-
     if await udb.is_user_banned(user_id):
         await message.reply_text("**🚫 You are banned**")
-        return
-
-    if IS_FSUB and not await get_fsub(client, message):
         return
 
     user = await get_cached_user_data(user_id)
