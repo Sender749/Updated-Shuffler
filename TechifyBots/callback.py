@@ -1,17 +1,14 @@
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaVideo
 from pyrogram import Client
 from Script import text
-from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT
+from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT, IS_FSUB
 from Database.maindb import mdb
 from .cmds import send_video, get_cached_user_data, USER_ACTIVE_VIDEOS, USER_CURRENT_VIDEO
 from .index import INDEX_TASKS, start_indexing
-from .link_generator import (
-    SCREENSHOT_SESSIONS, show_screenshot,
-    generate_screenshots, post_screenshot_to_channel,
-)
+from .link_generator import (SCREENSHOT_SESSIONS, show_screenshot, generate_screenshots, post_screenshot_to_channel,)
 import asyncio, string, random
 from datetime import datetime
-
+from .fsub import get_fsub
 
 @Client.on_callback_query()
 async def callback_query_handler(client, query: CallbackQuery):
@@ -327,6 +324,8 @@ async def handle_share_video(client: Client, query: CallbackQuery):
 # ==================== HANDLE SHARE LINK ACCESS ====================
 
 async def handle_share_link_access(client, message, link_id: str):
+    if IS_FSUB and not await get_fsub(client, message):
+        return
     link_data = await mdb.async_db["share_links"].find_one({"link_id": link_id})
     if not link_data:
         await message.reply_text("❌ Invalid or expired share link.")
