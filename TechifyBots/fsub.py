@@ -5,9 +5,19 @@ from pyrogram.types import Message
 from typing import List
 from pyrogram.errors import UserNotParticipant
 
-async def get_fsub(bot: Client, message: Message) -> bool:
+
+async def get_fsub(bot: Client, message, user_id: int = None) -> bool:
+    """
+    Check if user has joined all forced subscription channels.
+    Works with both Message objects and callback queries (pass user_id explicitly).
+    """
     tb = await bot.get_me()
-    user_id = message.from_user.id
+    if user_id is None:
+        try:
+            user_id = message.from_user.id
+        except AttributeError:
+            return True  # Can't determine user, allow through
+
     not_joined_channels = []
     for channel_id in AUTH_CHANNELS:
         try:
@@ -16,6 +26,9 @@ async def get_fsub(bot: Client, message: Message) -> bool:
             chat = await bot.get_chat(channel_id)
             invite_link = chat.invite_link or await bot.export_chat_invite_link(channel_id)
             not_joined_channels.append((chat.title, invite_link))
+        except Exception:
+            pass
+
     if not_joined_channels:
         join_buttons = []
         for i in range(0, len(not_joined_channels), 2):
@@ -27,7 +40,16 @@ async def get_fsub(bot: Client, message: Message) -> bool:
                     row.append(InlineKeyboardButton(button_text, url=link))
             join_buttons.append(row)
         join_buttons.append([InlineKeyboardButton("🔄 Try Again", url=f"https://telegram.me/{tb.username}?start")])
-        await message.reply(f"**🎭 {message.from_user.mention}, As I see, you haven’t joined my channel yet.\nPlease join by clicking the button below.**", reply_markup=InlineKeyboardMarkup(join_buttons))
+
+        # Try to get mention - works for Message, fallback to user_id for callbacks
+        try:
+            mention = message.from_user.mention
+        except AttributeError:
+            mention = f"[User](tg://user?id={user_id})"
+
+        await message.reply(
+            f"**🎭 {mention}, As I see, you haven't joined my channel yet.\nPlease join by clicking the button below.**",
+            reply_markup=InlineKeyboardMarkup(join_buttons)
+        )
         return False
     return True
-
