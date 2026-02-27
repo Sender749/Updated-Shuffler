@@ -5,8 +5,8 @@ from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT, IS_FSUB
 from Database.maindb import mdb
 from .cmds import send_video, get_cached_user_data, USER_ACTIVE_VIDEOS, USER_CURRENT_VIDEO
 from .index import INDEX_TASKS, start_indexing
-from .link_generator import (SCREENSHOT_SESSIONS, show_screenshot, generate_screenshots, post_screenshot_to_channel,)
-import asyncio, string, random
+from .link_generator import (SCREENSHOT_SESSIONS, SS_CANCEL_FLAGS, show_screenshot, generate_screenshots, post_screenshot_to_channel,)
+import asyncio, string, random, os
 from datetime import datetime
 from .fsub import get_fsub
 
@@ -76,6 +76,9 @@ async def callback_query_handler(client, query: CallbackQuery):
 
         elif data == "getvideo":
             await query.answer()
+            # Check force sub before sending video (pass user_id since query.message has no from_user)
+            if IS_FSUB and not await get_fsub(client, query.message, user_id=query.from_user.id):
+                return
             await send_video(client, query.message, uid=query.from_user.id)
 
         elif data.startswith("prev_"):
@@ -204,6 +207,100 @@ async def callback_query_handler(client, query: CallbackQuery):
                 return
             uid = int(data.split("ss_send_")[1])
             await post_screenshot_to_channel(client, query.message.chat.id, uid, query=query)
+
+        # ==================== DOWNLOAD-STAGE CANCEL & CUSTOM ====================
+
+        elif data.startswith("ss_dl_cancel_"):
+            if query.from_user.id != ADMIN_ID:
+                await query.answer("❌ Not allowed", show_alert=True)
+                return
+            uid = int(data.split("ss_dl_cancel_")[1])
+            # Set the cancel flag — the generator will check this
+            SS_CANCEL_FLAGS[uid] = True
+            await query.answer("❌ Cancelling…", show_alert=False)
+            try:
+                await query.message.edit_text("❌ Cancelling screenshot generation…")
+            except Exception:
+                pass
+
+        elif data.startswith("ss_dl_custom_"):
+            if query.from_user.id != ADMIN_ID:
+                await query.answer("❌ Not allowed", show_alert=True)
+                return
+            uid = int(data.split("ss_dl_custom_")[1])
+            # Stop the generation and go straight to custom photo state
+            SS_CANCEL_FLAGS[uid] = True
+            from .link_generator import LINK_SESSIONS, SCREENSHOT_SESSIONS as SS
+            # We don't have a full session yet, so create a minimal one for custom upload
+            # The user will send a photo which we handle in collect_files
+            # For now, create a placeholder session to accept the custom photo
+            if uid not in SS:
+                SS[uid] = {
+                    "screenshots": [],
+                    "used_timestamps": [],
+                    "current_index": 0,
+                    "link": "",
+                    "link_id": "",
+                    "source_files": LINK_SESSIONS.get(uid, {}).get("files", []),
+                    "state": "awaiting_custom_photo",
+                    "nav_msg_id": query.message.id,
+                    "nav_chat_id": query.message.chat.id,
+                }
+            else:
+                SS[uid]["state"] = "awaiting_custom_photo"
+            await query.answer("📸 Send your custom photo", show_alert=False)
+            try:
+                await query.message.edit_text(
+                    "📸 **Send your custom photo** to use as the screenshot.\n\n"
+                    "It will be used for the post.",
+                )
+            except Exception:
+                pass
+
+        # ==================== CANCEL POST (screenshot preview) ====================
+
+        elif data.startswith("ss_cancel_post_"):
+            if query.from_user.id != ADMIN_ID:
+                await query.answer("❌ Not allowed", show_alert=True)
+                return
+            uid = int(data.split("ss_cancel_post_")[1])
+            ss = SCREENSHOT_SESSIONS.get(uid)
+            if not ss:
+                await query.answer("❌ No active session.", show_alert=True)
+                return
+            # Delete the link from DB
+            link_id = ss.get("link_id")
+            if link_id:
+                try:
+                    from Database.maindb import mdb
+                    await mdb.async_db["file_links"].delete_one({"link_id": link_id})
+                except Exception as e:
+                    print(f"[ss_cancel_post] db delete error: {e}")
+            # Clean up temp files
+            screenshots = ss.get("screenshots", [])
+            temp_dirs = set()
+            for path in screenshots:
+                try:
+                    if os.path.exists(path):
+                        temp_dirs.add(os.path.dirname(path))
+                except Exception:
+                    pass
+            for d in temp_dirs:
+                try:
+                    import shutil
+                    shutil.rmtree(d, ignore_errors=True)
+                except Exception:
+                    pass
+            # Delete the navigator message
+            nav_msg_id = ss.get("nav_msg_id")
+            nav_chat_id = ss.get("nav_chat_id")
+            if nav_msg_id:
+                try:
+                    await client.delete_messages(nav_chat_id, nav_msg_id)
+                except Exception:
+                    pass
+            SCREENSHOT_SESSIONS.pop(uid, None)
+            await query.answer("✅ Post cancelled and deleted from DB.", show_alert=True)
 
     except Exception as e:
         print(f"[callback_query_handler] error: {e}")
