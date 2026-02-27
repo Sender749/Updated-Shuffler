@@ -20,6 +20,9 @@ SCREENSHOT_SESSIONS = {}
 # Lock per user to prevent race conditions in collect_files
 _COLLECT_LOCKS = {}
 
+# Track cancellation for screenshot generation per user
+SS_CANCEL_FLAGS = {}
+
 
 def generate_link_id():
     """Generate a unique 8-character link ID"""
@@ -119,7 +122,6 @@ async def collect_files(client: Client, message: Message):
                 "file_id": message.document.file_id,
                 "file_name": getattr(message.document, "file_name", "file") or "file",
                 "mime_type": mime,
-                # Try to get duration from video attribute if document is a video
                 "duration": 0,
                 "caption": message.caption or "",
             }
@@ -150,17 +152,14 @@ async def collect_files(client: Client, message: Message):
                 )
                 edited = True
             except Exception:
-                # Message may have been deleted or is too old — fall through to send new
                 pass
 
         if not edited:
-            # Delete old if it exists (best-effort)
             if old_msg_id:
                 try:
                     await client.delete_messages(chat_id, old_msg_id)
                 except Exception:
                     pass
-            # Send fresh count message
             new_msg = await message.reply_text(new_text)
             session["count_msg_id"] = new_msg.id
 
@@ -195,18 +194,51 @@ async def generate_multi_link(client: Client, message: Message):
         except Exception:
             pass
 
-    # Edit the /m_link command message as status (delete it first since it's a command)
+    # Reset cancel flag for this user
+    SS_CANCEL_FLAGS[user_id] = False
+
+    # Send status message with Cancel and Custom buttons
     status_msg = await message.reply_text(
-        "⏳ **Generating screenshots from your files…**\n\nThis may take a moment."
+        "⏳ **Downloading & Generating Screenshots…**\n\nThis may take a moment.",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🎨 Custom", callback_data=f"ss_dl_custom_{user_id}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"ss_dl_cancel_{user_id}"),
+            ]
+        ])
     )
+
+    # Store status msg id in session so callbacks can find it
+    session["status_msg_id"] = status_msg.id
+    session["status_chat_id"] = message.chat.id
 
     used_timestamps = []
     try:
         screenshots = await generate_screenshots(
-            client, session["files"], used_timestamps, status_msg=status_msg
+            client, session["files"], used_timestamps, status_msg=status_msg,
+            cancel_flag=SS_CANCEL_FLAGS, cancel_key=user_id
         )
     except Exception as e:
+        # Check if cancelled
+        if SS_CANCEL_FLAGS.get(user_id):
+            try:
+                await status_msg.edit_text("❌ Screenshot generation cancelled.")
+            except:
+                pass
+            LINK_SESSIONS.pop(user_id, None)
+            SS_CANCEL_FLAGS.pop(user_id, None)
+            return
         await status_msg.edit_text(f"❌ Screenshot generation failed:\n`{e}`")
+        return
+
+    # Check if cancelled during generation
+    if SS_CANCEL_FLAGS.get(user_id):
+        try:
+            await status_msg.edit_text("❌ Screenshot generation cancelled.")
+        except:
+            pass
+        LINK_SESSIONS.pop(user_id, None)
+        SS_CANCEL_FLAGS.pop(user_id, None)
         return
 
     if not screenshots:
@@ -242,6 +274,7 @@ async def generate_multi_link(client: Client, message: Message):
     }
 
     del LINK_SESSIONS[user_id]
+    SS_CANCEL_FLAGS.pop(user_id, None)
 
     # Delete status msg and send screenshot navigator
     await status_msg.delete()
@@ -280,6 +313,9 @@ async def show_screenshot(client: Client, chat_id: int, user_id: int, send_new: 
         ],
         [
             InlineKeyboardButton("📤 Send to Channel", callback_data=f"ss_send_{user_id}"),
+        ],
+        [
+            InlineKeyboardButton("❌ Cancel Post", callback_data=f"ss_cancel_post_{user_id}"),
         ],
     ]
     markup = InlineKeyboardMarkup(buttons)
@@ -336,14 +372,21 @@ async def generate_screenshots(
     used_timestamps: list = None,
     max_shots: int = 20,
     status_msg=None,
+    cancel_flag: dict = None,
+    cancel_key=None,
 ) -> list:
     """
     Download video files and extract screenshots via ffmpeg (async subprocesses).
+    Screenshots are picked RANDOMLY from the FULL video duration (not just first frames).
     used_timestamps: list of (file_index, float_ts) tuples already used — avoids repeats.
+    cancel_flag: dict with cancel_key to check for cancellation.
     Returns list of local file paths to the JPEG screenshots.
     """
     if used_timestamps is None:
         used_timestamps = []
+
+    def is_cancelled():
+        return cancel_flag and cancel_key is not None and cancel_flag.get(cancel_key, False)
 
     # Only process video-capable files; photos can't yield screenshots
     video_files = [
@@ -379,22 +422,33 @@ async def generate_screenshots(
     tmpdir = tempfile.mkdtemp(prefix="bot_ss_")
 
     for file_number, (orig_idx, f) in enumerate(video_files, start=1):
+        if is_cancelled():
+            break
+
         file_id = f["file_id"]
         want = screenshots_per_file.get(orig_idx, 1)
 
         if status_msg:
             try:
                 await status_msg.edit_text(
-                    f"⏳ **Generating screenshots…**\n\n"
-                    f"Downloading file {file_number}/{len(video_files)}…"
+                    f"⏳ **Downloading & Generating Screenshots…**\n\n"
+                    f"Downloading file {file_number}/{len(video_files)}…",
+                    reply_markup=InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton("🎨 Custom", callback_data=f"ss_dl_custom_{cancel_key}"),
+                            InlineKeyboardButton("❌ Cancel", callback_data=f"ss_dl_cancel_{cancel_key}"),
+                        ]
+                    ])
                 )
             except Exception:
                 pass
 
+        if is_cancelled():
+            break
+
         # ---- Download file ----
         dl_path = None
         try:
-            # Give the file a proper name so ffmpeg/ffprobe can identify it
             fname = f.get("file_name") or f"video_{orig_idx}.mp4"
             if "." not in os.path.basename(fname):
                 fname += ".mp4"
@@ -404,6 +458,9 @@ async def generate_screenshots(
             print(f"[generate_screenshots] download error for file {orig_idx}: {e}")
             continue
 
+        if is_cancelled():
+            break
+
         if not dl_path or not os.path.exists(dl_path):
             print(f"[generate_screenshots] dl_path invalid: {dl_path!r}")
             continue
@@ -411,8 +468,14 @@ async def generate_screenshots(
         if status_msg:
             try:
                 await status_msg.edit_text(
-                    f"⏳ **Generating screenshots…**\n\n"
-                    f"Probing file {file_number}/{len(video_files)}…"
+                    f"⏳ **Downloading & Generating Screenshots…**\n\n"
+                    f"Probing file {file_number}/{len(video_files)}…",
+                    reply_markup=InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton("🎨 Custom", callback_data=f"ss_dl_custom_{cancel_key}"),
+                            InlineKeyboardButton("❌ Cancel", callback_data=f"ss_dl_cancel_{cancel_key}"),
+                        ]
+                    ])
                 )
             except Exception:
                 pass
@@ -435,7 +498,6 @@ async def generate_screenshots(
                 pass
 
         if actual_dur <= 0:
-            # Fall back to metadata duration
             actual_dur = max(f.get("duration", 0) or 0, 0)
 
         if actual_dur <= 0:
@@ -446,13 +508,10 @@ async def generate_screenshots(
                 pass
             continue
 
-        # ---- Determine how many screenshots to take ----
-        # Cap by duration: at most 1 shot per second, but no more than `want`
+        # ---- Determine timestamps — pick RANDOMLY from full video ----
         adj_want = min(want, max(1, int(actual_dur)))
-
-        # Get timestamps to avoid (already extracted from this file)
         used_for_file = {ts for (fi, ts) in used_timestamps if fi == orig_idx}
-        timestamps = _pick_timestamps(actual_dur, adj_want, used_for_file)
+        timestamps = _pick_random_timestamps(actual_dur, adj_want, used_for_file)
 
         if not timestamps:
             print(f"[generate_screenshots] no timestamps for file {orig_idx} (dur={actual_dur})")
@@ -465,11 +524,20 @@ async def generate_screenshots(
         if status_msg:
             try:
                 await status_msg.edit_text(
-                    f"⏳ **Generating screenshots…**\n\n"
-                    f"Extracting {len(timestamps)} frames from file {file_number}/{len(video_files)}…"
+                    f"⏳ **Downloading & Generating Screenshots…**\n\n"
+                    f"Extracting {len(timestamps)} frames from file {file_number}/{len(video_files)}…",
+                    reply_markup=InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton("🎨 Custom", callback_data=f"ss_dl_custom_{cancel_key}"),
+                            InlineKeyboardButton("❌ Cancel", callback_data=f"ss_dl_cancel_{cancel_key}"),
+                        ]
+                    ])
                 )
             except Exception:
                 pass
+
+        if is_cancelled():
+            break
 
         # ---- Extract frames concurrently ----
         async def extract_frame(ts: float, out_path: str) -> bool:
@@ -513,10 +581,11 @@ async def generate_screenshots(
     return all_screenshots
 
 
-def _pick_timestamps(duration: float, count: int, exclude: set = None) -> list:
+def _pick_random_timestamps(duration: float, count: int, exclude: set = None) -> list:
     """
-    Pick `count` evenly-spaced timestamps between 5% and 95% of `duration`,
+    Pick `count` RANDOM timestamps from the FULL video duration (5% to 95%),
     avoiding timestamps already in `exclude` (within 1 second).
+    This ensures screenshots represent the whole video, not just the beginning.
     """
     if duration <= 0 or count <= 0:
         return []
@@ -528,27 +597,34 @@ def _pick_timestamps(duration: float, count: int, exclude: set = None) -> list:
         start = 0.0
         end = duration
 
-    # Build a dense candidate pool then sample evenly from it
-    pool_size = max(count * 6, 40)
-    step = (end - start) / pool_size
-    candidates = []
-    t = start
-    while t <= end + step * 0.5:
-        rounded = round(t, 3)
-        if not any(abs(rounded - ex) < 1.0 for ex in exclude):
-            candidates.append(rounded)
-        t += step
+    max_attempts = count * 20
+    picked = []
+    attempts = 0
 
-    if not candidates:
-        return []
-    if len(candidates) <= count:
-        return candidates
+    while len(picked) < count and attempts < max_attempts:
+        attempts += 1
+        # Pick a random timestamp from the full range
+        ts = round(random.uniform(start, end), 3)
+        # Check it's not too close to already-excluded timestamps
+        if any(abs(ts - ex) < 1.0 for ex in exclude):
+            continue
+        # Check it's not too close to already-picked timestamps
+        if any(abs(ts - p) < 1.0 for p in picked):
+            continue
+        picked.append(ts)
 
-    # Evenly sample `count` items from the candidate list
-    if count == 1:
-        return [candidates[len(candidates) // 2]]
-    indices = {round(i * (len(candidates) - 1) / (count - 1)) for i in range(count)}
-    return [candidates[i] for i in sorted(indices)]
+    # If we couldn't get enough random unique ones, fill with evenly-spaced fallback
+    if len(picked) < count:
+        step = (end - start) / max(count * 2, 20)
+        t = start
+        while len(picked) < count and t <= end:
+            ts = round(t, 3)
+            if (not any(abs(ts - ex) < 1.0 for ex in exclude) and
+                    not any(abs(ts - p) < 1.0 for p in picked)):
+                picked.append(ts)
+            t += step
+
+    return sorted(picked)
 
 
 # ==================== CUSTOM PHOTO HANDLER ====================
@@ -585,7 +661,9 @@ async def _handle_custom_photo(client: Client, message: Message, user_id: int, s
 # ==================== POST TO CHANNEL ====================
 
 async def post_screenshot_to_channel(client: Client, chat_id: int, user_id: int, query=None):
-    """Send the current screenshot to POST_CHANNEL with a Generate Link button."""
+    """Send the current screenshot to POST_CHANNEL with a Generate Link button.
+       Also adds the file_id (post ID) under caption in quote format.
+    """
     ss_session = SCREENSHOT_SESSIONS.get(user_id)
     if not ss_session:
         if query:
@@ -600,16 +678,20 @@ async def post_screenshot_to_channel(client: Client, chat_id: int, user_id: int,
     idx = ss_session["current_index"]
     photo_path = ss_session["screenshots"][idx]
     link = ss_session["link"]
+    link_id = ss_session.get("link_id", "")
 
     markup = InlineKeyboardMarkup([[
         InlineKeyboardButton("🔗 Get Files", url=link)
     ]])
 
+    # Post ID shown as quote under caption
+    caption = f"✨ **Here is your link** 👇\n\n<blockquote>🆔 Post ID: <code>{link_id}</code></blockquote>"
+
     try:
         await client.send_photo(
             POST_CHANNEL,
             photo=photo_path,
-            caption="✨ **Here is your link** 👇",
+            caption=caption,
             reply_markup=markup,
         )
         screenshots = ss_session.get("screenshots", [])
