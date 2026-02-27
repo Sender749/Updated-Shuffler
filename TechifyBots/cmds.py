@@ -191,7 +191,7 @@ async def send_video(client, message, uid=None):
         await message.reply_text("**🛠️ Bot Under Maintenance — Back Soon!**")
         return
     
-    if IS_FSUB and not await get_fsub(client, message):
+    if IS_FSUB and not await get_fsub(client, message, user_id=uid):
         return
     
     # Check user status
