@@ -17,7 +17,7 @@ PICS = (os.environ.get("PICS", "https://envs.sh/iKu.jpg https://envs.sh/iKE.jpg 
 LOG_CHNL = int(os.getenv("LOG_CHNL", "-1002412135872"))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "Navex_69") # Without @
 IS_FSUB = os.getenv("FSUB", "True").lower() == "true"
-AUTH_CHANNELS = list(map(int, os.environ.get("AUTH_CHANNELS", "-1002856477031").split())) if os.environ.get("AUTH_CHANNEL") else []  -1002856477031
+AUTH_CHANNELS = int(os.getenv("AUTH_CHANNELS", "-1002856477031").split())) if os.environ.get("AUTH_CHANNEL") else []
 DELETE_TIMER = int(os.getenv("DELETE_TIMER", "300"))  # seconds (default 5 minutes)
 PROTECT_CONTENT = os.getenv("PROTECT_CONTENT", "True").lower() == "true"
 FREE_LIMIT = int(os.getenv("FREE_LIMIT", "10"))
