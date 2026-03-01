@@ -4,21 +4,32 @@ from vars import AUTH_CHANNELS
 from pyrogram import Client
 from pyrogram.errors import UserNotParticipant, ChatAdminRequired, ChannelPrivate, PeerIdInvalid
 
+# ─── Logger ───────────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] [%(levelname)s] [FSUB] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 async def get_fsub(bot: Client, message, user_id: int = None) -> bool:
+    """
+    Check if user has joined all forced subscription channels.
+    Works with both Message objects and callback queries (pass user_id explicitly).
+    Returns True if user passed fsub check, False otherwise (and sends the fsub message).
+    """
+
+    # ── 1. Resolve user_id ────────────────────────────────────────────────────
     if user_id is None:
         try:
             user_id = message.from_user.id
         except AttributeError:
             logger.warning("get_fsub: could not resolve user_id from message — allowing through")
             return True
+
+    # ── 2. Resolve chat_id for sending the fsub notice ────────────────────────
     try:
         chat_id = message.chat.id
     except AttributeError:
@@ -26,12 +37,16 @@ async def get_fsub(bot: Client, message, user_id: int = None) -> bool:
         return True
 
     logger.info(f"get_fsub: checking user_id={user_id} in chat_id={chat_id}")
+
+    # ── 3. Guard: AUTH_CHANNELS must be populated ─────────────────────────────
     if not AUTH_CHANNELS:
         logger.warning("get_fsub: AUTH_CHANNELS is EMPTY — fsub check skipped. "
                        "Set the AUTH_CHANNEL env variable!")
         return True
 
     logger.info(f"get_fsub: AUTH_CHANNELS to check: {AUTH_CHANNELS}")
+
+    # ── 4. Check membership in each channel ───────────────────────────────────
     not_joined = []   # list of (title, invite_link)
 
     for channel_id in AUTH_CHANNELS:
@@ -70,9 +85,13 @@ async def get_fsub(bot: Client, message, user_id: int = None) -> bool:
             logger.error(f"get_fsub: INVALID channel_id {channel_id} — check AUTH_CHANNEL env var")
         except Exception as e:
             logger.error(f"get_fsub: unexpected error checking membership in {channel_id}: {e}")
+
+    # ── 5. All channels joined → allow ────────────────────────────────────────
     if not not_joined:
         logger.info(f"get_fsub: user {user_id} has joined all channels — ALLOWED")
         return True
+
+    # ── 6. Build join buttons ─────────────────────────────────────────────────
     logger.info(f"get_fsub: user {user_id} missing {len(not_joined)} channel(s) — sending fsub message")
 
     join_buttons = []
@@ -83,6 +102,7 @@ async def get_fsub(bot: Client, message, user_id: int = None) -> bool:
                 title, link = not_joined[i + j]
                 row.append(InlineKeyboardButton(f"{i + j + 1}. {title}", url=link))
         join_buttons.append(row)
+
     try:
         tb = await bot.get_me()
         bot_username = tb.username
@@ -90,9 +110,12 @@ async def get_fsub(bot: Client, message, user_id: int = None) -> bool:
         logger.error(f"get_fsub: could not get bot username: {e}")
         bot_username = "me"
 
+    # FIX: ?start= requires a value so Telegram properly triggers /start
     join_buttons.append([
         InlineKeyboardButton("🔄 Try Again", url=f"https://t.me/{bot_username}?start=start")
     ])
+
+    # ── 7. Build mention ──────────────────────────────────────────────────────
     try:
         mention = message.from_user.mention
     except AttributeError:
@@ -102,6 +125,11 @@ async def get_fsub(bot: Client, message, user_id: int = None) -> bool:
         f"**🎭 {mention}, you haven't joined my required channel(s) yet.\n"
         f"Please join using the button(s) below, then tap 🔄 Try Again.**"
     )
+
+    # ── 8. Send the fsub notice ───────────────────────────────────────────────
+    # FIX: Use bot.send_message() directly instead of message.reply().
+    # When called from a callback query, `message` is the BOT's own media message.
+    # Calling .reply() on a media message silently fails in Pyrogram.
     try:
         await bot.send_message(
             chat_id,
