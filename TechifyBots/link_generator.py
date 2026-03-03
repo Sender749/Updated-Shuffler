@@ -18,7 +18,7 @@ SS_CANCEL_FLAGS = {}
 SS_BG_TASKS = {}
 SS_DL_CUSTOM_ACTIVE = {}
 _SS_PHOTO_CACHE = {}
-_FFMPEG_SEM = asyncio.Semaphore(2)
+_FFMPEG_SEM = asyncio.Semaphore(1)
 
 
 def generate_link_id():
@@ -399,161 +399,128 @@ async def _run_async(cmd, timeout=120):
 
 
 async def generate_screenshots(
-    client, files, used_timestamps=None, max_shots=20,
-    status_msg=None, cancel_flag=None, cancel_key=None,
+    client,
+    files,
+    used_timestamps=None,
+    max_shots=6,  # SAFE DEFAULT FOR 0.1 vCPU
+    status_msg=None,
+    cancel_flag=None,
+    cancel_key=None,
 ):
+    """
+    ULTRA SAFE VERSION for 0.1 vCPU / 512MB RAM
+
+    - No ffprobe
+    - 1 ffmpeg at a time
+    - 1 frame per call
+    - Random timestamps
+    - Small sleep between frames
+    - Immediate cleanup
+    """
+
     if used_timestamps is None:
         used_timestamps = []
 
     def is_cancelled():
-        return cancel_flag and cancel_key is not None and cancel_flag.get(cancel_key, False)
+        return (
+            cancel_flag
+            and cancel_key is not None
+            and cancel_flag.get(cancel_key, False)
+        )
 
-    video_files = [(i, f) for i, f in enumerate(files) if f["type"] in ("video", "document")]
+    video_files = [
+        (i, f) for i, f in enumerate(files)
+        if f["type"] in ("video", "document")
+    ]
+
     if not video_files:
         return []
 
-    total_meta_dur = sum(max(f.get("duration", 0), 0) for _, f in video_files)
-    screenshots_per_file = {}
-    if total_meta_dur > 0:
-        for orig_idx, f in video_files:
-            dur = max(f.get("duration", 0), 1)
-            screenshots_per_file[orig_idx] = max(1, round((dur / total_meta_dur) * max_shots))
-    else:
-        per = max(1, max_shots // len(video_files))
-        for orig_idx, _ in video_files:
-            screenshots_per_file[orig_idx] = per
-
-    total_assigned = sum(screenshots_per_file.values())
-    if total_assigned > max_shots:
-        scale = max_shots / total_assigned
-        for k in screenshots_per_file:
-            screenshots_per_file[k] = max(1, round(screenshots_per_file[k] * scale))
+    # If multiple files → distribute shots equally
+    shots_per_file = max(1, max_shots // len(video_files))
 
     all_screenshots = []
     tmpdir = tempfile.mkdtemp(prefix="bot_ss_")
 
     for file_number, (orig_idx, f) in enumerate(video_files, start=1):
+
         if is_cancelled():
             break
 
         file_id = f["file_id"]
-        want = screenshots_per_file.get(orig_idx, 1)
+        duration = max(int(f.get("duration", 0)), 10)  # fallback 10 sec
+        want = min(shots_per_file, 5)  # hard limit per file
 
         if status_msg:
             try:
                 await status_msg.edit_text(
-                    f"⏳ **Generating Screenshots…**\n\n"
-                    f"📥 Downloading file {file_number}/{len(video_files)}…",
-                    reply_markup=_build_progress_markup(cancel_key)
+                    f"⏳ Generating Screenshots...\n\n"
+                    f"📥 Downloading file {file_number}/{len(video_files)}",
+                    reply_markup=_build_progress_markup(cancel_key),
                 )
-            except Exception:
+            except:
                 pass
 
-        if is_cancelled():
-            break
-
-        dl_path = None
+        # ---- DOWNLOAD VIDEO ----
         try:
-            fname = f.get("file_name") or f"video_{orig_idx}.mp4"
-            if "." not in os.path.basename(fname):
-                fname += ".mp4"
-            dest = os.path.join(tmpdir, f"file_{orig_idx}_{fname}")
-            dl_path = await client.download_media(file_id, file_name=dest)
-        except Exception as e:
-            print(f"[generate_screenshots] download error file {orig_idx}: {e}")
-            continue
+            filename = f.get("file_name") or f"video_{orig_idx}.mp4"
+            if "." not in filename:
+                filename += ".mp4"
 
-        if is_cancelled():
-            try:
-                os.remove(dl_path)
-            except Exception:
-                pass
-            break
+            dest = os.path.join(tmpdir, f"{orig_idx}_{filename}")
+            dl_path = await client.download_media(file_id, file_name=dest)
+
+        except Exception as e:
+            print(f"[SS] download failed: {e}")
+            continue
 
         if not dl_path or not os.path.exists(dl_path):
             continue
 
-        if status_msg:
-            try:
-                await status_msg.edit_text(
-                    f"⏳ **Generating Screenshots…**\n\n"
-                    f"🔍 Probing file {file_number}/{len(video_files)}…",
-                    reply_markup=_build_progress_markup(cancel_key)
-                )
-            except Exception:
-                pass
+        # ---- GENERATE RANDOM TIMESTAMPS ----
+        timestamps = []
+        for _ in range(want):
+            ts = random.uniform(duration * 0.1, duration * 0.9)
+            timestamps.append(round(ts, 2))
 
-        actual_dur = 0.0
-        rc, stdout, _ = await _run_async([
-            "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", dl_path,
-        ], timeout=60)
-        if rc == 0 and stdout.strip():
-            try:
-                actual_dur = float(stdout.strip())
-            except ValueError:
-                pass
-
-        if actual_dur <= 0:
-            actual_dur = max(f.get("duration", 0) or 0, 0)
-
-        if actual_dur <= 0:
-            try:
-                os.remove(dl_path)
-            except Exception:
-                pass
-            continue
-
-        adj_want = min(want, max(1, int(actual_dur)))
-        used_for_file = {ts for (fi, ts) in used_timestamps if fi == orig_idx}
-        timestamps = _pick_random_timestamps(actual_dur, adj_want, used_for_file)
-
-        if not timestamps:
-            try:
-                os.remove(dl_path)
-            except Exception:
-                pass
-            continue
-
-        if status_msg:
-            try:
-                await status_msg.edit_text(
-                    f"⏳ **Generating Screenshots…**\n\n"
-                    f"🎬 Extracting {len(timestamps)} frames from file {file_number}/{len(video_files)}…",
-                    reply_markup=_build_progress_markup(cancel_key)
-                )
-            except Exception:
-                pass
-
-        if is_cancelled():
-            try:
-                os.remove(dl_path)
-            except Exception:
-                pass
-            break
-
-        # Sequential extraction (semaphore inside _run_async prevents OOM)
+        # ---- EXTRACT FRAMES ONE BY ONE (SAFE MODE) ----
         for ts in timestamps:
+
             if is_cancelled():
                 break
-            out_path = os.path.join(tmpdir, f"ss_{orig_idx}_{ts:.3f}.jpg")
-            rc2, _, err2 = await _run_async([
-                "ffmpeg", "-ss", f"{ts:.3f}", "-i", dl_path,
-                "-frames:v", "1", "-q:v", "2", "-f", "image2", out_path, "-y",
+
+            out_path = os.path.join(
+                tmpdir,
+                f"ss_{orig_idx}_{ts}.jpg"
+            )
+
+            rc, _, err = await _run_async([
+                "ffmpeg",
+                "-ss", str(ts),
+                "-i", dl_path,
+                "-frames:v", "1",
+                "-q:v", "5",          # lighter quality
+                "-vf", "scale=480:-1",  # reduce resolution (VERY IMPORTANT)
+                "-y",
+                out_path,
             ], timeout=60)
-            if rc2 == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+
+            if rc == 0 and os.path.exists(out_path):
                 all_screenshots.append(out_path)
                 used_timestamps.append((orig_idx, ts))
             else:
-                print(f"[extract_frame] failed rc={rc2} ts={ts:.3f}: {err2[-200:]}")
+                print(f"[SS] frame fail: {err[-100:]}")
 
+            # Small delay to prevent CPU spike
+            await asyncio.sleep(0.4)
+
+        # Delete video immediately to free disk + RAM
         try:
             os.remove(dl_path)
-        except Exception:
+        except:
             pass
 
     return all_screenshots
-
 
 def _pick_random_timestamps(duration, count, exclude=None):
     if duration <= 0 or count <= 0:
