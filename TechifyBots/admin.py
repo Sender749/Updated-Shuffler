@@ -190,19 +190,46 @@ async def delete_all_videos_command(client, message):
     except Exception as e:
         await message.reply_text(f"**Error: {str(e)}*")
 
+
 @Client.on_message(filters.command("delete") & filters.private & filters.user(ADMIN_ID))
 async def delete_video_by_id_command(client, message):
+    """Delete entry from DB.
+    /delete <integer>  -> delete from videos collection by video_id
+    /delete <post_id>  -> delete from file_links by post_id (single-file file_id or group_id)
+    /delete <link_id>  -> delete from file_links by link_id
+    """
     if len(message.command) < 2:
-        await message.reply_text("⚠️ Please provide a video ID to delete.\nUsage: /delete <video_id>")
+        await message.reply_text(
+            "Usage:\n"
+            "/delete <video_id> — integer video ID\n"
+            "/delete <post_id>  — post ID shown in channel caption\n"
+            "/delete <link_id>  — internal link ID"
+        )
         return
+
+    target = message.command[1].strip()
+
+    # Try integer video_id
     try:
-        video_id = int(message.command[1])
+        video_id = int(target)
+        deleted = await mdb.delete_video_by_id(video_id)
+        if deleted:
+            await message.reply_text(f"Deleted video ID `{video_id}` from videos DB.")
+            return
     except ValueError:
-        await message.reply_text("⚠️ Invalid video ID. Please provide a valid integer.")
+        pass
+
+    # Try post_id
+    r1 = await mdb.async_db["file_links"].delete_one({"post_id": target})
+    if r1.deleted_count:
+        await message.reply_text(f"Deleted link set with Post ID `{target}`.")
         return
-    deleted = await mdb.delete_video_by_id(video_id)
-    if deleted:
-        await message.reply_text(f"✅ Deleted video with ID `{video_id}`")
-    else:
-        await message.reply_text(f"⚠️ Video ID `{video_id}` not found.")
+
+    # Try link_id
+    r2 = await mdb.async_db["file_links"].delete_one({"link_id": target})
+    if r2.deleted_count:
+        await message.reply_text(f"Deleted link with Link ID `{target}`.")
+        return
+
+    await message.reply_text(f"No record found for ID `{target}`.")
 
