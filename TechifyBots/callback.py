@@ -5,8 +5,12 @@ from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT, IS_FSUB
 from Database.maindb import mdb
 from .cmds import send_video, get_cached_user_data, USER_ACTIVE_VIDEOS, USER_CURRENT_VIDEO
 from .index import INDEX_TASKS, start_indexing
-from .link_generator import (SCREENSHOT_SESSIONS, SS_CANCEL_FLAGS, SS_BG_TASKS, SS_DL_CUSTOM_MSGS, show_screenshot, generate_screenshots, post_screenshot_to_channel,)
-import asyncio, string, random, os
+from .link_generator import (
+    SCREENSHOT_SESSIONS, SS_CANCEL_FLAGS, SS_BG_TASKS, SS_DL_CUSTOM_ACTIVE,
+    LINK_SESSIONS, show_screenshot, generate_screenshots, post_screenshot_to_channel,
+    _cleanup_ss_files, _finish_and_show_navigator,
+)
+import asyncio, string, random, os, shutil
 from datetime import datetime
 from .fsub import get_fsub
 
@@ -142,7 +146,7 @@ async def callback_query_handler(client, query: CallbackQuery):
                 ss["current_index"] = (ss["current_index"] - 1) % total
             await show_screenshot(client, query.message.chat.id, uid)
 
-        elif data.startswith("ss_custom_"):
+        elif data.startswith("ss_custom_") and not data.startswith("ss_custom_back_"):
             await query.answer()
             if query.from_user.id != ADMIN_ID:
                 await query.answer("❌ Not allowed", show_alert=True)
@@ -225,35 +229,32 @@ async def callback_query_handler(client, query: CallbackQuery):
             SS_CANCEL_FLAGS[uid] = True
             await query.answer("❌ Cancelling…", show_alert=False)
             try:
-                await query.message.edit_text("❌ Cancelling screenshot generation…")
+                await query.message.edit_text("❌ Cancelling screenshot generation…", reply_markup=None)
             except Exception:
                 pass
 
-        elif data.startswith("ss_dl_custom_"):
+        elif data.startswith("ss_dl_custom_") and not data.startswith("ss_dl_custom_back_"):
             if query.from_user.id != ADMIN_ID:
                 await query.answer("❌ Not allowed", show_alert=True)
                 return
             uid = int(data.split("ss_dl_custom_")[1])
             await query.answer("📸 Send your photo or video", show_alert=False)
 
-            # Don't stop generation — it continues in background
-            # Send a new message asking for photo or video with a Back button
+            # Mark custom active — collect_files will route next photo/video here
+            SS_DL_CUSTOM_ACTIVE[uid] = True
+
+            # Edit the SAME status message (don't send a new one)
             try:
-                sent = await query.message.reply_text(
-                    "📸 **Send a photo or video** to use for the channel post.\n\n"
+                await query.message.edit_text(
+                    "📸 **Send a photo or video** for the channel post.\n\n"
                     "• **Photo** → posted directly\n"
                     "• **Video** → first frame extracted and posted\n\n"
-                    "The bot will continue downloading & generating screenshots in the background.\n"
-                    "Click **Back** to return and wait for automatic screenshot generation.",
+                    "SS generation will be cancelled once you send the file.\n"
+                    "Click **Back** to return to progress.",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("⬅️ Back", callback_data=f"ss_dl_custom_back_{uid}")]
                     ])
                 )
-                # Store so media handler can delete it after use
-                SS_DL_CUSTOM_MSGS[uid] = {
-                    "msg_id": sent.id,
-                    "chat_id": query.message.chat.id,
-                }
             except Exception:
                 pass
 
@@ -279,20 +280,50 @@ async def callback_query_handler(client, query: CallbackQuery):
             # The nav message (SS preview) is still intact — just answer
 
         elif data.startswith("ss_dl_custom_back_"):
-            # Back from custom photo/video ask during download phase
             await query.answer()
             if query.from_user.id != ADMIN_ID:
                 await query.answer("❌ Not allowed", show_alert=True)
                 return
             uid = int(data.split("ss_dl_custom_back_")[1])
-            # Remove the pending custom entry so media handler won't intercept
-            SS_DL_CUSTOM_MSGS.pop(uid, None)
-            # Delete this ask message
-            try:
-                await query.message.delete()
-            except Exception:
-                pass
-            # Generation is still running in background — nothing else to do
+
+            # Un-mark custom active so future files go to normal collect
+            SS_DL_CUSTOM_ACTIVE[uid] = False
+
+            link_session = LINK_SESSIONS.get(uid)
+
+            # If background already finished, show SS navigator immediately
+            if link_session and link_session.get("completed_screenshots"):
+                screenshots = link_session.pop("completed_screenshots")
+                used_timestamps = link_session.pop("completed_used_timestamps", [])
+                try:
+                    await _finish_and_show_navigator(
+                        client, query.message.chat.id, uid,
+                        link_session, query.message, screenshots, used_timestamps
+                    )
+                except Exception as e:
+                    print(f"[ss_dl_custom_back] finish error: {e}")
+                    try:
+                        await query.message.edit_text("❌ Error restoring screenshots.", reply_markup=None)
+                    except Exception:
+                        pass
+            else:
+                # Still generating — restore progress view
+                bg = link_session.get("bg_generating", False) if link_session else False
+                progress_text = (
+                    "⏳ **Generating Screenshots…**\n\n📊 Still in progress…"
+                    if bg else
+                    "⏳ **Generating Screenshots…**\n\n📊 Starting…"
+                )
+                try:
+                    await query.message.edit_text(
+                        progress_text,
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🎨 Custom", callback_data=f"ss_dl_custom_{uid}"),
+                            InlineKeyboardButton("❌ Cancel", callback_data=f"ss_dl_cancel_{uid}"),
+                        ]])
+                    )
+                except Exception:
+                    pass
 
         # ==================== CANCEL POST (screenshot preview) ====================
 
@@ -305,29 +336,15 @@ async def callback_query_handler(client, query: CallbackQuery):
             if not ss:
                 await query.answer("❌ No active session.", show_alert=True)
                 return
-            # Delete the link from DB
+            # Delete the link from DB (mdb already imported at top level)
             link_id = ss.get("link_id")
             if link_id:
                 try:
-                    from Database.maindb import mdb
                     await mdb.async_db["file_links"].delete_one({"link_id": link_id})
                 except Exception as e:
                     print(f"[ss_cancel_post] db delete error: {e}")
-            # Clean up temp files
-            screenshots = ss.get("screenshots", [])
-            temp_dirs = set()
-            for path in screenshots:
-                try:
-                    if os.path.exists(path):
-                        temp_dirs.add(os.path.dirname(path))
-                except Exception:
-                    pass
-            for d in temp_dirs:
-                try:
-                    import shutil
-                    shutil.rmtree(d, ignore_errors=True)
-                except Exception:
-                    pass
+            # Clean up temp files via helper
+            _cleanup_ss_files(ss.get("screenshots", []))
             # Delete the navigator message
             nav_msg_id = ss.get("nav_msg_id")
             nav_chat_id = ss.get("nav_chat_id")
