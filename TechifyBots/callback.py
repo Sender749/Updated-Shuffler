@@ -5,7 +5,7 @@ from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT, IS_FSUB
 from Database.maindb import mdb
 from .cmds import send_video, get_cached_user_data, USER_ACTIVE_VIDEOS, USER_CURRENT_VIDEO
 from .index import INDEX_TASKS, start_indexing
-from .link_generator import (SCREENSHOT_SESSIONS, SS_CANCEL_FLAGS, show_screenshot, generate_screenshots, post_screenshot_to_channel,)
+from .link_generator import (SCREENSHOT_SESSIONS, SS_CANCEL_FLAGS, SS_BG_TASKS, SS_DL_CUSTOM_MSGS, show_screenshot, generate_screenshots, post_screenshot_to_channel,)
 import asyncio, string, random, os
 from datetime import datetime
 from .fsub import get_fsub
@@ -153,13 +153,19 @@ async def callback_query_handler(client, query: CallbackQuery):
                 await query.answer("❌ Session expired.", show_alert=True)
                 return
             ss["state"] = "awaiting_custom_photo"
-            # Edit the nav message to ask for a photo
+            # Send a NEW message asking for photo/video (nav message stays intact for Back)
             try:
-                await query.message.edit_caption(
-                    "📸 **Send your custom photo** to use as the screenshot.\n\n"
-                    "It will be shown at the current position.",
-                    reply_markup=None,
+                sent = await query.message.reply_text(
+                    "📸 **Send a photo or video** to use as the custom screenshot/thumbnail.\n\n"
+                    "• **Photo** → used directly as screenshot\n"
+                    "• **Video** → first frame extracted as screenshot\n\n"
+                    "Click **Back** to return to the screenshot preview.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Back", callback_data=f"ss_custom_back_{uid}")]
+                    ])
                 )
+                ss["custom_ask_msg_id"] = sent.id
+                ss["custom_ask_chat_id"] = query.message.chat.id
             except Exception:
                 pass
 
@@ -228,34 +234,65 @@ async def callback_query_handler(client, query: CallbackQuery):
                 await query.answer("❌ Not allowed", show_alert=True)
                 return
             uid = int(data.split("ss_dl_custom_")[1])
-            # Stop the generation and go straight to custom photo state
-            SS_CANCEL_FLAGS[uid] = True
-            from .link_generator import LINK_SESSIONS, SCREENSHOT_SESSIONS as SS
-            # We don't have a full session yet, so create a minimal one for custom upload
-            # The user will send a photo which we handle in collect_files
-            # For now, create a placeholder session to accept the custom photo
-            if uid not in SS:
-                SS[uid] = {
-                    "screenshots": [],
-                    "used_timestamps": [],
-                    "current_index": 0,
-                    "link": "",
-                    "link_id": "",
-                    "source_files": LINK_SESSIONS.get(uid, {}).get("files", []),
-                    "state": "awaiting_custom_photo",
-                    "nav_msg_id": query.message.id,
-                    "nav_chat_id": query.message.chat.id,
-                }
-            else:
-                SS[uid]["state"] = "awaiting_custom_photo"
-            await query.answer("📸 Send your custom photo", show_alert=False)
+            await query.answer("📸 Send your photo or video", show_alert=False)
+
+            # Don't stop generation — it continues in background
+            # Send a new message asking for photo or video with a Back button
             try:
-                await query.message.edit_text(
-                    "📸 **Send your custom photo** to use as the screenshot.\n\n"
-                    "It will be used for the post.",
+                sent = await query.message.reply_text(
+                    "📸 **Send a photo or video** to use for the channel post.\n\n"
+                    "• **Photo** → posted directly\n"
+                    "• **Video** → first frame extracted and posted\n\n"
+                    "The bot will continue downloading & generating screenshots in the background.\n"
+                    "Click **Back** to return and wait for automatic screenshot generation.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Back", callback_data=f"ss_dl_custom_back_{uid}")]
+                    ])
                 )
+                # Store so media handler can delete it after use
+                SS_DL_CUSTOM_MSGS[uid] = {
+                    "msg_id": sent.id,
+                    "chat_id": query.message.chat.id,
+                }
             except Exception:
                 pass
+
+        # ==================== CUSTOM BACK BUTTONS ====================
+
+        elif data.startswith("ss_custom_back_"):
+            # Back from custom photo/video ask during SS preview phase
+            await query.answer()
+            if query.from_user.id != ADMIN_ID:
+                await query.answer("❌ Not allowed", show_alert=True)
+                return
+            uid = int(data.split("ss_custom_back_")[1])
+            ss = SCREENSHOT_SESSIONS.get(uid)
+            if not ss:
+                await query.answer("❌ Session expired.", show_alert=True)
+                return
+            ss["state"] = "browsing"
+            # Delete the ask message
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            # The nav message (SS preview) is still intact — just answer
+
+        elif data.startswith("ss_dl_custom_back_"):
+            # Back from custom photo/video ask during download phase
+            await query.answer()
+            if query.from_user.id != ADMIN_ID:
+                await query.answer("❌ Not allowed", show_alert=True)
+                return
+            uid = int(data.split("ss_dl_custom_back_")[1])
+            # Remove the pending custom entry so media handler won't intercept
+            SS_DL_CUSTOM_MSGS.pop(uid, None)
+            # Delete this ask message
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            # Generation is still running in background — nothing else to do
 
         # ==================== CANCEL POST (screenshot preview) ====================
 
