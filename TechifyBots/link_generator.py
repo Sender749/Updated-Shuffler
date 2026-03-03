@@ -23,6 +23,15 @@ _COLLECT_LOCKS = {}
 # Track cancellation for screenshot generation per user
 SS_CANCEL_FLAGS = {}
 
+# Store background generation tasks (asyncio.Task) keyed by user_id
+SS_BG_TASKS = {}
+
+# Track admin custom-during-download sessions: user_id -> {msg_id, chat_id}
+SS_DL_CUSTOM_MSGS = {}
+
+# Cache screenshots as bytes for faster navigation (nav_msg_id -> bytes)
+_SS_PHOTO_CACHE = {}
+
 
 def generate_link_id():
     """Generate a unique 8-character link ID"""
@@ -70,13 +79,22 @@ async def collect_files(client: Client, message: Message):
     """Collect files from admin — one count msg updated per batch, no duplicates."""
     user_id = message.from_user.id
 
-    # --- Handle custom screenshot upload (awaiting photo from admin) ---
+    # --- Handle custom media upload during download phase ---
+    if user_id in SS_DL_CUSTOM_MSGS:
+        # Admin is sending photo/video as custom while download runs in background
+        if message.photo or message.video:
+            await _handle_dl_custom_media(client, message, user_id)
+        else:
+            await message.reply_text("❌ Please send a **photo or video** for the custom post.")
+        return
+
+    # --- Handle custom screenshot upload (awaiting photo/video from admin) ---
     ss_session = SCREENSHOT_SESSIONS.get(user_id)
     if ss_session and ss_session.get("state") == "awaiting_custom_photo":
-        if message.photo:
-            await _handle_custom_photo(client, message, user_id, ss_session)
+        if message.photo or message.video:
+            await _handle_custom_media(client, message, user_id, ss_session)
         else:
-            await message.reply_text("❌ Please send a **photo** for custom screenshot.")
+            await message.reply_text("❌ Please send a **photo or video** for custom screenshot.")
         return
 
     # --- Normal file collection: serialize with a per-user lock to avoid race ---
@@ -212,40 +230,84 @@ async def generate_multi_link(client: Client, message: Message):
     session["status_msg_id"] = status_msg.id
     session["status_chat_id"] = message.chat.id
 
+    # Run screenshot generation as a background task so the bot stays responsive
+    task = asyncio.create_task(
+        _run_screenshot_generation(client, message, user_id, session, status_msg)
+    )
+    SS_BG_TASKS[user_id] = task
+
+
+# ==================== BACKGROUND SCREENSHOT GENERATION ====================
+
+async def _run_screenshot_generation(client: Client, message, user_id: int, session: dict, status_msg):
+    """Run screenshot generation in background. On completion, auto-show navigator."""
     used_timestamps = []
+    chat_id = message.chat.id
+
+    # Mark generation as in-progress in a shared dict so callbacks can check
+    session["bg_generating"] = True
+
     try:
         screenshots = await generate_screenshots(
             client, session["files"], used_timestamps, status_msg=status_msg,
             cancel_flag=SS_CANCEL_FLAGS, cancel_key=user_id
         )
     except Exception as e:
-        # Check if cancelled
         if SS_CANCEL_FLAGS.get(user_id):
             try:
                 await status_msg.edit_text("❌ Screenshot generation cancelled.")
-            except:
+            except Exception:
                 pass
             LINK_SESSIONS.pop(user_id, None)
             SS_CANCEL_FLAGS.pop(user_id, None)
+            SS_BG_TASKS.pop(user_id, None)
+            SS_DL_CUSTOM_MSGS.pop(user_id, None)
+            session["bg_generating"] = False
             return
-        await status_msg.edit_text(f"❌ Screenshot generation failed:\n`{e}`")
-        return
-
-    # Check if cancelled during generation
-    if SS_CANCEL_FLAGS.get(user_id):
         try:
-            await status_msg.edit_text("❌ Screenshot generation cancelled.")
-        except:
+            await status_msg.edit_text(f"❌ Screenshot generation failed:\n`{e}`")
+        except Exception:
             pass
         LINK_SESSIONS.pop(user_id, None)
         SS_CANCEL_FLAGS.pop(user_id, None)
+        SS_BG_TASKS.pop(user_id, None)
+        SS_DL_CUSTOM_MSGS.pop(user_id, None)
+        session["bg_generating"] = False
+        return
+
+    session["bg_generating"] = False
+
+    # If admin sent custom media while we were generating, stop and use that instead
+    if user_id in SS_DL_CUSTOM_MSGS:
+        # Custom handler already processed the post, just clean up
+        LINK_SESSIONS.pop(user_id, None)
+        SS_CANCEL_FLAGS.pop(user_id, None)
+        SS_BG_TASKS.pop(user_id, None)
+        return
+
+    # Cancelled by admin
+    if SS_CANCEL_FLAGS.get(user_id):
+        try:
+            await status_msg.edit_text("❌ Screenshot generation cancelled.")
+        except Exception:
+            pass
+        LINK_SESSIONS.pop(user_id, None)
+        SS_CANCEL_FLAGS.pop(user_id, None)
+        SS_BG_TASKS.pop(user_id, None)
+        SS_DL_CUSTOM_MSGS.pop(user_id, None)
         return
 
     if not screenshots:
-        await status_msg.edit_text(
-            "❌ Could not generate screenshots.\n\n"
-            "Make sure the files you sent are **video files** (not photos or unsupported formats)."
-        )
+        try:
+            await status_msg.edit_text(
+                "❌ Could not generate screenshots.\n\n"
+                "Make sure the files you sent are **video files** (not photos or unsupported formats)."
+            )
+        except Exception:
+            pass
+        LINK_SESSIONS.pop(user_id, None)
+        SS_CANCEL_FLAGS.pop(user_id, None)
+        SS_BG_TASKS.pop(user_id, None)
         return
 
     # Generate and store link in DB
@@ -270,21 +332,33 @@ async def generate_multi_link(client: Client, message: Message):
         "source_files": session["files"],
         "state": "browsing",
         "nav_msg_id": None,
-        "nav_chat_id": message.chat.id,
+        "nav_chat_id": chat_id,
     }
 
-    del LINK_SESSIONS[user_id]
+    LINK_SESSIONS.pop(user_id, None)
     SS_CANCEL_FLAGS.pop(user_id, None)
+    SS_BG_TASKS.pop(user_id, None)
 
-    # Delete status msg and send screenshot navigator
-    await status_msg.delete()
-    await show_screenshot(client, message.chat.id, user_id, send_new=True)
+    # If there's a pending custom-during-download message, delete it (admin came back)
+    dl_custom = SS_DL_CUSTOM_MSGS.pop(user_id, None)
+    if dl_custom:
+        try:
+            await client.delete_messages(dl_custom["chat_id"], dl_custom["msg_id"])
+        except Exception:
+            pass
+
+    # Delete the status message and show navigator
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+    await show_screenshot(client, chat_id, user_id, send_new=True)
 
 
 # ==================== SHOW SCREENSHOT WITH NAVIGATION ====================
 
 async def show_screenshot(client: Client, chat_id: int, user_id: int, send_new: bool = False):
-    """Send or edit the screenshot navigation message."""
+    """Send or edit the screenshot navigation message. Uses cached bytes for speed."""
     ss_session = SCREENSHOT_SESSIONS.get(user_id)
     if not ss_session:
         return
@@ -321,13 +395,26 @@ async def show_screenshot(client: Client, chat_id: int, user_id: int, send_new: 
     markup = InlineKeyboardMarkup(buttons)
     nav_msg_id = ss_session.get("nav_msg_id")
 
+    # Pre-load photo bytes into memory for fast editing (avoids re-reading from disk)
+    cache_key = photo_path
+    if cache_key not in _SS_PHOTO_CACHE:
+        try:
+            with open(photo_path, "rb") as f:
+                _SS_PHOTO_CACHE[cache_key] = f.read()
+        except Exception:
+            _SS_PHOTO_CACHE[cache_key] = None
+
+    photo_bytes = _SS_PHOTO_CACHE.get(cache_key)
+    # Use bytes if available, otherwise fall back to path
+    photo_src = photo_bytes if photo_bytes else photo_path
+
     if not send_new and nav_msg_id:
-        # Try editing existing message in-place
+        # Try editing existing message in-place using bytes (fast)
         try:
             await client.edit_message_media(
                 chat_id=chat_id,
                 message_id=nav_msg_id,
-                media=InputMediaPhoto(media=photo_path, caption=caption),
+                media=InputMediaPhoto(media=photo_src, caption=caption),
                 reply_markup=markup,
             )
             return
@@ -342,7 +429,7 @@ async def show_screenshot(client: Client, chat_id: int, user_id: int, send_new: 
     # Send a fresh photo message
     try:
         sent = await client.send_photo(
-            chat_id, photo=photo_path, caption=caption, reply_markup=markup
+            chat_id, photo=photo_src, caption=caption, reply_markup=markup
         )
         ss_session["nav_msg_id"] = sent.id
     except Exception as e:
@@ -627,35 +714,197 @@ def _pick_random_timestamps(duration: float, count: int, exclude: set = None) ->
     return sorted(picked)
 
 
-# ==================== CUSTOM PHOTO HANDLER ====================
+# ==================== CUSTOM MEDIA HANDLER (SS Preview phase) ====================
 
-async def _handle_custom_photo(client: Client, message: Message, user_id: int, ss_session: dict):
-    """Admin sent a custom photo — download it and insert at current position."""
-    photo = message.photo
+async def _handle_custom_media(client: Client, message: Message, user_id: int, ss_session: dict):
+    """Admin sent a custom photo or video — download it and insert at current position."""
     tmpdir = tempfile.mkdtemp(prefix="bot_custom_")
-    photo_path = os.path.join(tmpdir, "custom_photo.jpg")
 
-    try:
-        await client.download_media(photo.file_id, file_name=photo_path)
-    except Exception as e:
-        await message.reply_text(f"❌ Failed to download photo: {e}")
+    if message.photo:
+        media_id = message.photo.file_id
+        dest_name = "custom_photo.jpg"
+    elif message.video:
+        media_id = message.video.file_id
+        dest_name = "custom_video_thumb.jpg"
+    else:
+        await message.reply_text("❌ Unsupported media type.")
         return
 
-    if not os.path.exists(photo_path) or os.path.getsize(photo_path) == 0:
-        await message.reply_text("❌ Downloaded photo is empty. Please try again.")
+    media_path = os.path.join(tmpdir, dest_name)
+
+    try:
+        if message.video:
+            # Download video and extract first usable frame as screenshot
+            vid_path = os.path.join(tmpdir, "custom_video.mp4")
+            dl = await client.download_media(media_id, file_name=vid_path)
+            # Extract a frame at 5% duration
+            rc, stdout, _ = await _run_async(
+                ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", dl], timeout=60
+            )
+            dur = 0.0
+            if rc == 0 and stdout.strip():
+                try:
+                    dur = float(stdout.strip())
+                except Exception:
+                    pass
+            ts = max(dur * 0.05, 0.5)
+            rc2, _, _ = await _run_async(
+                ["ffmpeg", "-ss", f"{ts:.3f}", "-i", dl,
+                 "-frames:v", "1", "-q:v", "2", "-f", "image2", media_path, "-y"], timeout=60
+            )
+            if rc2 != 0 or not os.path.exists(media_path):
+                await message.reply_text("❌ Could not extract frame from video. Try sending a photo.")
+                return
+        else:
+            await client.download_media(media_id, file_name=media_path)
+    except Exception as e:
+        await message.reply_text(f"❌ Failed to download media: {e}")
+        return
+
+    if not os.path.exists(media_path) or os.path.getsize(media_path) == 0:
+        await message.reply_text("❌ Downloaded media is empty. Please try again.")
         return
 
     # Insert at current index so it becomes the visible screenshot
     idx = ss_session["current_index"]
-    ss_session["screenshots"].insert(idx, photo_path)
+    ss_session["screenshots"].insert(idx, media_path)
     ss_session["state"] = "browsing"
+    # Clear cache for new path
+    _SS_PHOTO_CACHE.pop(media_path, None)
+
+    # Delete the ask message if present
+    custom_ask_msg_id = ss_session.pop("custom_ask_msg_id", None)
+    custom_ask_chat_id = ss_session.pop("custom_ask_chat_id", None)
+    if custom_ask_msg_id and custom_ask_chat_id:
+        try:
+            await client.delete_messages(custom_ask_chat_id, custom_ask_msg_id)
+        except Exception:
+            pass
 
     # Edit nav message to show new screenshot
     chat_id = ss_session.get("nav_chat_id", message.chat.id)
     await show_screenshot(client, chat_id, user_id)
     try:
         await message.delete()
-    except:
+    except Exception:
+        pass
+
+
+# ==================== CUSTOM MEDIA HANDLER (Download phase) ====================
+
+async def _handle_dl_custom_media(client: Client, message: Message, user_id: int):
+    """Admin sent custom photo/video WHILE download was running in background.
+    Cancel the background generation, use the sent media to post to channel immediately.
+    """
+    # Cancel the background task
+    SS_CANCEL_FLAGS[user_id] = True
+    task = SS_BG_TASKS.get(user_id)
+    if task and not task.done():
+        task.cancel()
+
+    dl_custom_info = SS_DL_CUSTOM_MSGS.pop(user_id, None)
+
+    # Delete the "ask for photo/video" message
+    if dl_custom_info:
+        try:
+            await client.delete_messages(dl_custom_info["chat_id"], dl_custom_info["msg_id"])
+        except Exception:
+            pass
+
+    chat_id = message.chat.id
+    tmpdir = tempfile.mkdtemp(prefix="bot_dl_custom_")
+
+    processing_msg = await message.reply_text("⏳ Processing your media for post…")
+
+    try:
+        if message.photo:
+            media_id = message.photo.file_id
+            dest = os.path.join(tmpdir, "custom_photo.jpg")
+            await client.download_media(media_id, file_name=dest)
+            media_path = dest
+        elif message.video:
+            media_id = message.video.file_id
+            vid_path = os.path.join(tmpdir, "custom_video.mp4")
+            dl = await client.download_media(media_id, file_name=vid_path)
+            # Extract frame
+            rc, stdout, _ = await _run_async(
+                ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", dl], timeout=60
+            )
+            dur = 0.0
+            if rc == 0 and stdout.strip():
+                try:
+                    dur = float(stdout.strip())
+                except Exception:
+                    pass
+            ts = max(dur * 0.05, 0.5)
+            frame_path = os.path.join(tmpdir, "frame.jpg")
+            rc2, _, _ = await _run_async(
+                ["ffmpeg", "-ss", f"{ts:.3f}", "-i", dl,
+                 "-frames:v", "1", "-q:v", "2", "-f", "image2", frame_path, "-y"], timeout=60
+            )
+            if rc2 != 0 or not os.path.exists(frame_path):
+                await processing_msg.edit_text("❌ Could not extract frame from video. Try sending a photo.")
+                return
+            media_path = frame_path
+        else:
+            await processing_msg.edit_text("❌ Unsupported media.")
+            return
+    except Exception as e:
+        await processing_msg.edit_text(f"❌ Failed to process media: {e}")
+        return
+
+    # Get link session files to build the link
+    link_session = LINK_SESSIONS.get(user_id)
+    if not link_session:
+        await processing_msg.edit_text("❌ Original session expired. Please start again with /l.")
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return
+
+    link_id = generate_link_id()
+    await mdb.async_db["file_links"].insert_one({
+        "link_id": link_id,
+        "files": link_session["files"],
+        "created_by": user_id,
+        "created_at": datetime.now(),
+        "access_count": 0,
+    })
+    bot_info = await client.get_me()
+    link = f"https://t.me/{bot_info.username}?start=link_{link_id}"
+
+    if not POST_CHANNEL:
+        await processing_msg.edit_text("❌ POST_CHANNEL not configured.")
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return
+
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Get Files", url=link)]])
+    caption = f"✨ **Here is your link** 👇\n\n<blockquote>🆔 Post ID: <code>{link_id}</code></blockquote>"
+
+    try:
+        await client.send_photo(POST_CHANNEL, photo=media_path, caption=caption, reply_markup=markup)
+        await processing_msg.edit_text("✅ Custom media **posted to channel** with Get Files button!")
+    except Exception as e:
+        await processing_msg.edit_text(f"❌ Failed to post: `{e}`")
+
+    # Cleanup
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    LINK_SESSIONS.pop(user_id, None)
+    SS_CANCEL_FLAGS.pop(user_id, None)
+    SS_BG_TASKS.pop(user_id, None)
+
+    # Delete the status downloading message if still around
+    status_msg_id = link_session.get("status_msg_id")
+    status_chat_id = link_session.get("status_chat_id")
+    if status_msg_id and status_chat_id:
+        try:
+            await client.delete_messages(status_chat_id, status_msg_id)
+        except Exception:
+            pass
+
+    try:
+        await message.delete()
+    except Exception:
         pass
 
 # ==================== POST TO CHANNEL ====================
