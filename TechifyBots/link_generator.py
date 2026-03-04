@@ -1,25 +1,4 @@
-# link_generator.py  —  /l  and  /m_link  admin flow
-#
-# FIXES in this version
-# ─────────────────────
-# 1. SS are stored on disk (temp folder) until post is done — never uploaded
-#    to any chat just to grab a file_id. After posting, the temp folder is
-#    deleted cleanly.
-#
-# 2. Bulk-file debounce: per-uid lock + 400 ms settle window ensures only
-#    ONE updated prompt is sent after a burst of files settles.
-#
-# 3. Post caption: only quoted file/group ID, link lives in the button.
-#
-# 4. "Get More Videos" button appended below the LAST file sent to a user
-#    via handle_link_access.
-#
-# 5. Link files are deleted after DELETE_TIMER seconds (from vars.py).
-#
-# 6. auto_delete notification message is also deleted after 1 day (86400 s).
-
 from __future__ import annotations
-
 import asyncio
 import math
 import os
@@ -29,15 +8,9 @@ import string
 import tempfile
 from datetime import datetime
 from typing import Optional
-
 from pyrogram import Client, filters
 from pyrogram.errors import MessageNotModified
-from pyrogram.types import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    InputMediaPhoto,
-    Message,
-)
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto,Message
 
 from vars import ADMIN_IDS, POST_CHANNEL, DELETE_TIMER
 from Database.maindb import mdb
@@ -73,26 +46,6 @@ async def _edit(client: Client, chat_id: int, msg_id: int,
     except (MessageNotModified, Exception):
         pass
 
-
-# ── session ───────────────────────────────────────────────────────────────────
-#
-# LINK_SESSIONS[admin_id] = {
-#   "chat_id"          : int
-#   "state"            : "collecting" | "generating" | "ss_done" | "custom_wait"
-#   "files"            : [{"file_id":str, "media_type":str, "msg_id":int}, ...]
-#   "ask_msg_id"       : int | None
-#   "nav_msg_id"       : int | None
-#   "ss_paths"         : [str, ...]        ← on-disk paths; no DM upload hack
-#   "ss_tmp_dir"       : str | None        ← base temp dir for this session's SS
-#   "ss_index"         : int
-#   "cancel_flag"      : bool
-#   "bg_task"          : asyncio.Task | None
-#   "batch"            : int
-#   "pre_custom_state" : str
-#   "_collect_lock"    : asyncio.Lock
-#   "_settle_task"     : asyncio.Task|None
-# }
-
 LINK_SESSIONS: dict[int, dict] = {}
 
 # compat aliases used by callback.py import
@@ -102,7 +55,6 @@ SS_BG_TASKS: dict     = {}
 SS_DL_CUSTOM_ACTIVE: dict = {}
 
 SETTLE_DELAY = 0.4   # seconds to wait after last file before updating prompt
-
 
 def _new_sess(uid: int, chat_id: int) -> dict:
     return {
@@ -555,7 +507,7 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
     bot_me  = await client.get_me()
     tg_link = f"https://t.me/{bot_me.username}?start=link_{link_id}"
 
-    caption = f"> `{post_id}`"
+    caption = f">🆔 : `{post_id}`"
 
     get_btn = InlineKeyboardMarkup([
         [InlineKeyboardButton("🎬 Get File", url=tg_link)]
