@@ -1,7 +1,7 @@
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaVideo
 from pyrogram import Client
 from Script import text
-from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT, IS_FSUB
+from vars import ADMIN_ID, ADMIN_IDS, DELETE_TIMER, PROTECT_CONTENT, IS_FSUB
 from Database.maindb import mdb
 from .cmds import send_video, get_cached_user_data, get_bot_info, USER_ACTIVE_VIDEOS, USER_CURRENT_VIDEO
 from .index import INDEX_TASKS, start_indexing
@@ -17,9 +17,7 @@ from .fsub import get_fsub
 
 
 def _is_admin(uid: int) -> bool:
-    if isinstance(ADMIN_ID, (list, tuple)):
-        return uid in ADMIN_ID
-    return uid == ADMIN_ID
+    return uid in ADMIN_IDS
 
 
 @Client.on_callback_query()
