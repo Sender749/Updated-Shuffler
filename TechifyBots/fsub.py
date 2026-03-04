@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from vars import AUTH_CHANNELS
 from pyrogram import Client
@@ -11,89 +12,118 @@ logging.basicConfig(
     format="[%(asctime)s] [%(levelname)s] [FSUB] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
-# ──────────────────────────────────────────────────────────────────────────────
+
+# ─── Bot info cache (permanent) ───────────────────────────────────────────────
+_BOT_USERNAME_CACHE = None
+
+# ─── FSUB membership cache: {user_id: {channel_id: (passed: bool, ts: float)}}
+_FSUB_CACHE: dict = {}
+_FSUB_CACHE_TTL = 120  # re-check membership every 2 minutes
+
+# ─── Channel info cache (invite links rarely change) ─────────────────────────
+_CHANNEL_INFO_CACHE: dict = {}  # {channel_id: (title, invite_link)}
+
+
+async def _get_bot_username(bot: Client) -> str:
+    global _BOT_USERNAME_CACHE
+    if not _BOT_USERNAME_CACHE:
+        me = await bot.get_me()
+        _BOT_USERNAME_CACHE = me.username
+    return _BOT_USERNAME_CACHE
+
+
+async def _check_single_channel(bot: Client, user_id: int, channel_id: int) -> tuple:
+    """
+    Check membership for one channel.
+    Returns (joined: bool, title: str | None, invite_link: str | None)
+    """
+    import time
+    now = time.monotonic()
+
+    # Fast path: membership cache
+    user_cache = _FSUB_CACHE.get(user_id, {})
+    cached = user_cache.get(channel_id)
+    if cached:
+        joined, ts = cached
+        if now - ts < _FSUB_CACHE_TTL:
+            if joined:
+                return True, None, None
+
+    try:
+        await bot.get_chat_member(channel_id, user_id)
+        _FSUB_CACHE.setdefault(user_id, {})[channel_id] = (True, now)
+        return True, None, None
+
+    except UserNotParticipant:
+        _FSUB_CACHE.setdefault(user_id, {})[channel_id] = (False, now)
+        # Get channel info (cached)
+        if channel_id in _CHANNEL_INFO_CACHE:
+            title, invite_link = _CHANNEL_INFO_CACHE[channel_id]
+        else:
+            try:
+                chat = await bot.get_chat(channel_id)
+                invite_link = chat.invite_link
+                if not invite_link:
+                    invite_link = await bot.export_chat_invite_link(channel_id)
+                title = chat.title
+                _CHANNEL_INFO_CACHE[channel_id] = (title, invite_link)
+            except ChatAdminRequired:
+                logger.error(f"get_fsub: bot is NOT admin in {channel_id}")
+                return True, None, None
+            except (ChannelPrivate, PeerIdInvalid) as e:
+                logger.error(f"get_fsub: channel {channel_id} inaccessible: {e}")
+                return True, None, None
+            except Exception as e:
+                logger.error(f"get_fsub: unexpected error getting chat {channel_id}: {e}")
+                return True, None, None
+
+        return False, title, invite_link
+
+    except (ChatAdminRequired, ChannelPrivate, PeerIdInvalid) as e:
+        logger.error(f"get_fsub: error checking {channel_id}: {e}")
+        return True, None, None
+    except Exception as e:
+        logger.error(f"get_fsub: unexpected error for channel {channel_id}: {e}")
+        return True, None, None
 
 
 async def get_fsub(bot: Client, message, user_id: int = None) -> bool:
     """
     Check if user has joined all forced subscription channels.
-    Works with both Message objects and callback queries (pass user_id explicitly).
-    Returns True if user passed fsub check, False otherwise (and sends the fsub message).
+    All channel membership checks run in PARALLEL for maximum speed.
+    Returns True if user passed fsub check, False otherwise.
     """
 
-    # ── 1. Resolve user_id ────────────────────────────────────────────────────
     if user_id is None:
         try:
             user_id = message.from_user.id
         except AttributeError:
-            logger.warning("get_fsub: could not resolve user_id from message — allowing through")
             return True
 
-    # ── 2. Resolve chat_id for sending the fsub notice ────────────────────────
     try:
         chat_id = message.chat.id
     except AttributeError:
-        logger.warning(f"get_fsub: could not resolve chat_id for user {user_id} — allowing through")
         return True
 
-    logger.info(f"get_fsub: checking user_id={user_id} in chat_id={chat_id}")
-
-    # ── 3. Guard: AUTH_CHANNELS must be populated ─────────────────────────────
     if not AUTH_CHANNELS:
-        logger.warning("get_fsub: AUTH_CHANNELS is EMPTY — fsub check skipped. "
-                       "Set the AUTH_CHANNEL env variable!")
         return True
 
-    logger.info(f"get_fsub: AUTH_CHANNELS to check: {AUTH_CHANNELS}")
+    # Check ALL channels in PARALLEL
+    results = await asyncio.gather(
+        *[_check_single_channel(bot, user_id, ch) for ch in AUTH_CHANNELS],
+        return_exceptions=False
+    )
 
-    # ── 4. Check membership in each channel ───────────────────────────────────
-    not_joined = []   # list of (title, invite_link)
+    not_joined = [
+        (title, link)
+        for joined, title, link in results
+        if not joined and title and link
+    ]
 
-    for channel_id in AUTH_CHANNELS:
-        logger.info(f"get_fsub: checking channel {channel_id} for user {user_id}")
-        try:
-            member = await bot.get_chat_member(channel_id, user_id)
-            logger.info(f"get_fsub: user {user_id} status in {channel_id} = {member.status}")
-
-        except UserNotParticipant:
-            logger.info(f"get_fsub: user {user_id} has NOT joined channel {channel_id}")
-            try:
-                chat = await bot.get_chat(channel_id)
-                invite_link = chat.invite_link
-                if not invite_link:
-                    logger.info(f"get_fsub: generating invite link for {channel_id}")
-                    invite_link = await bot.export_chat_invite_link(channel_id)
-                not_joined.append((chat.title, invite_link))
-                logger.info(f"get_fsub: added '{chat.title}' to not-joined list")
-
-            except ChatAdminRequired:
-                logger.error(f"get_fsub: bot is NOT an admin in channel {channel_id} — "
-                             "cannot fetch invite link. Add the bot as admin!")
-            except ChannelPrivate:
-                logger.error(f"get_fsub: channel {channel_id} is private and bot has no access")
-            except PeerIdInvalid:
-                logger.error(f"get_fsub: channel_id {channel_id} is INVALID — check AUTH_CHANNEL env var")
-            except Exception as e:
-                logger.error(f"get_fsub: unexpected error getting chat info for {channel_id}: {e}")
-
-        except ChatAdminRequired:
-            logger.error(f"get_fsub: bot is NOT an admin in {channel_id} — "
-                         "cannot check membership. Add bot as admin!")
-        except ChannelPrivate:
-            logger.error(f"get_fsub: channel {channel_id} is private/inaccessible to bot")
-        except PeerIdInvalid:
-            logger.error(f"get_fsub: INVALID channel_id {channel_id} — check AUTH_CHANNEL env var")
-        except Exception as e:
-            logger.error(f"get_fsub: unexpected error checking membership in {channel_id}: {e}")
-
-    # ── 5. All channels joined → allow ────────────────────────────────────────
     if not not_joined:
-        logger.info(f"get_fsub: user {user_id} has joined all channels — ALLOWED")
         return True
 
-    # ── 6. Build join buttons ─────────────────────────────────────────────────
-    logger.info(f"get_fsub: user {user_id} missing {len(not_joined)} channel(s) — sending fsub message")
-
+    # Build join buttons
     join_buttons = []
     for i in range(0, len(not_joined), 2):
         row = []
@@ -103,19 +133,11 @@ async def get_fsub(bot: Client, message, user_id: int = None) -> bool:
                 row.append(InlineKeyboardButton(f"{i + j + 1}. {title}", url=link))
         join_buttons.append(row)
 
-    try:
-        tb = await bot.get_me()
-        bot_username = tb.username
-    except Exception as e:
-        logger.error(f"get_fsub: could not get bot username: {e}")
-        bot_username = "me"
-
-    # FIX: ?start= requires a value so Telegram properly triggers /start
+    bot_username = await _get_bot_username(bot)
     join_buttons.append([
         InlineKeyboardButton("🔄 Try Again", url=f"https://t.me/{bot_username}?start=start")
     ])
 
-    # ── 7. Build mention ──────────────────────────────────────────────────────
     try:
         mention = message.from_user.mention
     except AttributeError:
@@ -126,18 +148,18 @@ async def get_fsub(bot: Client, message, user_id: int = None) -> bool:
         f"Please join using the button(s) below, then tap 🔄 Try Again.**"
     )
 
-    # ── 8. Send the fsub notice ───────────────────────────────────────────────
-    # FIX: Use bot.send_message() directly instead of message.reply().
-    # When called from a callback query, `message` is the BOT's own media message.
-    # Calling .reply() on a media message silently fails in Pyrogram.
     try:
         await bot.send_message(
             chat_id,
             fsub_text,
             reply_markup=InlineKeyboardMarkup(join_buttons)
         )
-        logger.info(f"get_fsub: fsub message sent to chat_id={chat_id} for user {user_id}")
     except Exception as e:
         logger.error(f"get_fsub: FAILED to send fsub message to {chat_id}: {e}")
 
     return False
+
+
+def invalidate_fsub_cache(user_id: int):
+    """Call this after a user joins a channel to force a fresh check."""
+    _FSUB_CACHE.pop(user_id, None)
