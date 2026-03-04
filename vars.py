@@ -1,8 +1,8 @@
 import os
 from typing import List
 
-API_ID = int(os.getenv("API_ID", "25208597"))
-API_HASH = os.getenv("API_HASH", "e99c3c5693d6d23a143b6ce760b7a6de")
+API_ID = int(os.getenv("API_ID", "29453152"))
+API_HASH = os.getenv("API_HASH", "2302adc174dbc954ae5081eda5131166")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://gd3251791_db_user:GDPQbmyXAEFDGpbL@cluster0.6jxsnxc.mongodb.net/?appName=Cluster0")
 
@@ -27,7 +27,7 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "Navex_69")  # Without @
 IS_FSUB = os.getenv("FSUB", "True").lower() == "true"
 _auth_channel_env = os.environ.get("AUTH_CHANNEL", "-1002856477031").strip()
 AUTH_CHANNELS = list(map(int, _auth_channel_env.split())) if _auth_channel_env else []
-DELETE_TIMER = int(os.getenv("DELETE_TIMER", "300"))
+DELETE_TIMER = int(os.getenv("DELETE_TIMER", "1800"))
 PROTECT_CONTENT = os.getenv("PROTECT_CONTENT", "True").lower() == "true"
 FREE_LIMIT = int(os.getenv("FREE_LIMIT", "10"))
 POST_CHANNEL = int(os.getenv("POST_CHANNEL", "-1002856477031"))
