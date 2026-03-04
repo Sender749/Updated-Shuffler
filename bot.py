@@ -39,15 +39,16 @@ class Bot(Client):
         except Exception as e:
             print(f"Web server error: {e}")
 
-
         await super().start()
         me = await self.get_me()
         print(f"Bot Started as {me.first_name}")
-        if isinstance(ADMIN_ID, int):
+
+        # Notify all admins on start
+        for admin_id in ADMIN_IDS:
             try:
-                await self.send_message(ADMIN_ID, f"**{me.first_name} is started...**")
+                await self.send_message(admin_id, f"**{me.first_name} is started...**")
             except Exception as e:
-                print(f"Error sending message to admin: {e}")
+                print(f"Error sending start message to admin {admin_id}: {e}")
 
         if LOG_CHNL:
             try:
@@ -64,6 +65,6 @@ class Bot(Client):
 
     async def stop(self, *args):
         await super().stop()
-        print(f"{me.first_name} Bot stopped.")
+        print("Bot stopped.")
 
 bot = Bot()
