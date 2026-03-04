@@ -1,8 +1,8 @@
 import os
 from typing import List
 
-API_ID = int(os.getenv("API_ID", "25208597"))
-API_HASH = os.getenv("API_HASH", "e99c3c5693d6d23a143b6ce760b7a6de")
+API_ID = int(os.getenv("API_ID", "29453152"))
+API_HASH = os.getenv("API_HASH", "2302adc174dbc954ae5081eda5131166")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://gd3251791_db_user:GDPQbmyXAEFDGpbL@cluster0.6jxsnxc.mongodb.net/?appName=Cluster0")
 
@@ -12,7 +12,7 @@ if " " in _channel_env:
 else:
     DATABASE_CHANNEL_ID = int(_channel_env)
 
-ADMIN_ID = int(os.getenv("ADMIN_ID", "6541030917"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "6541030917 1052054451")).split()
 PICS = (os.environ.get("PICS", "https://envs.sh/iKu.jpg https://envs.sh/iKE.jpg https://envs.sh/iKe.jpg https://envs.sh/iKi.jpg https://envs.sh/iKb.jpg")).split()
 LOG_CHNL = int(os.getenv("LOG_CHNL", "-1002412135872"))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "Navex_69") # Without @
