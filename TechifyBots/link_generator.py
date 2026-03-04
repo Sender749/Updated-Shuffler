@@ -149,7 +149,7 @@ def _ask_text(count: int) -> str:
         f"📁 **Send files to generate link**\n\n"
         f"Files received: **{count}**\n\n"
         f"Send any files (video, photo, audio, document etc.)\n"
-        f"When done, send /m\\_link to generate the link."
+        f"When done, send /m_link to generate the link."
     )
 
 def _ask_markup() -> InlineKeyboardMarkup:
