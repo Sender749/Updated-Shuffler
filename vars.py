@@ -12,7 +12,7 @@ if " " in _channel_env:
 else:
     DATABASE_CHANNEL_ID = int(_channel_env)
 
-ADMIN_ID = int(os.getenv("ADMIN_ID", "6541030917 1052054451")).split()
+ADMIN_ID = list(map(int, os.getenv("ADMIN_ID", "6541030917 1052054451").split()))
 PICS = (os.environ.get("PICS", "https://envs.sh/iKu.jpg https://envs.sh/iKE.jpg https://envs.sh/iKe.jpg https://envs.sh/iKi.jpg https://envs.sh/iKb.jpg")).split()
 LOG_CHNL = int(os.getenv("LOG_CHNL", "-1002412135872"))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "Navex_69") # Without @
