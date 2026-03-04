@@ -335,9 +335,20 @@ async def auto_delete(client, cid, mid, uid):
             USER_ACTIVE_VIDEOS[uid].discard(mid)
             if not USER_ACTIVE_VIDEOS[uid]:
                 USER_ACTIVE_VIDEOS.pop(uid, None)
-                await client.send_message(
+                notif = await client.send_message(
                     cid, "✅ Video Deleted, due to inactivity.\n\nClick below button to get new video.",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get New Video", callback_data="getvideo")]])
                 )
+                # Delete the notification itself after 1 day (86400 s)
+                asyncio.create_task(_delete_notif_after(client, cid, notif.id, 86400))
     except Exception as e:
         print(f"Delete error: {e}")
+
+
+async def _delete_notif_after(client, cid, mid, delay):
+    """Delete a notification message after `delay` seconds."""
+    try:
+        await asyncio.sleep(delay)
+        await client.delete_messages(cid, mid)
+    except Exception:
+        pass
