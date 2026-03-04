@@ -3,7 +3,7 @@ from pyrogram import Client
 from Script import text
 from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT, IS_FSUB
 from Database.maindb import mdb
-from .cmds import send_video, get_cached_user_data, USER_ACTIVE_VIDEOS, USER_CURRENT_VIDEO
+from .cmds import send_video, get_cached_user_data, get_bot_info, USER_ACTIVE_VIDEOS, USER_CURRENT_VIDEO
 from .index import INDEX_TASKS, start_indexing
 from .link_generator import (
     SCREENSHOT_SESSIONS, SS_CANCEL_FLAGS, SS_BG_TASKS, SS_DL_CUSTOM_ACTIVE,
@@ -22,6 +22,8 @@ async def callback_query_handler(client, query: CallbackQuery):
         # ==================== GENERAL ====================
 
         if data == "start":
+            # Answer immediately so the spinner disappears
+            await query.answer()
             try:
                 await query.message.edit_caption(
                     caption=text.START.format(query.from_user.mention),
@@ -36,6 +38,7 @@ async def callback_query_handler(client, query: CallbackQuery):
                 pass
 
         elif data == "help":
+            await query.answer()
             await query.message.edit_caption(
                 caption=text.HELP,
                 reply_markup=InlineKeyboardMarkup([
@@ -46,6 +49,7 @@ async def callback_query_handler(client, query: CallbackQuery):
             )
 
         elif data == "about":
+            await query.answer()
             await query.message.edit_caption(
                 caption=text.ABOUT,
                 reply_markup=InlineKeyboardMarkup([
@@ -56,6 +60,7 @@ async def callback_query_handler(client, query: CallbackQuery):
             )
 
         elif data == "pro":
+            await query.answer()
             current_limits = await mdb.get_global_limits()
             pro_text = text.PRO.format(free_limit=current_limits["free_limit"])
             await query.message.edit_caption(
@@ -71,6 +76,7 @@ async def callback_query_handler(client, query: CallbackQuery):
             if query.from_user.id != ADMIN_ID:
                 await query.answer("You are not my admin ❌", show_alert=True)
             else:
+                await query.answer()
                 await query.message.edit_caption(
                     caption=text.ADMIN_COMMANDS,
                     reply_markup=InlineKeyboardMarkup([
@@ -80,7 +86,6 @@ async def callback_query_handler(client, query: CallbackQuery):
 
         elif data == "getvideo":
             await query.answer()
-            # Check force sub before sending video (pass user_id since query.message has no from_user)
             if IS_FSUB and not await get_fsub(client, query.message, user_id=query.from_user.id):
                 return
             await send_video(client, query.message, uid=query.from_user.id)
@@ -94,6 +99,7 @@ async def callback_query_handler(client, query: CallbackQuery):
             await handle_share_video(client, query)
 
         elif data == "close":
+            await query.answer()
             await query.message.delete()
 
         # ==================== INDEX ====================
@@ -124,6 +130,9 @@ async def callback_query_handler(client, query: CallbackQuery):
             except Exception:
                 pass
 
+    except Exception as e:
+        print(f"[callback_query_handler] error: {e}")
+
 # ==================== PREVIOUS VIDEO HANDLER ====================
 
 async def handle_previous_video(client: Client, query: CallbackQuery):
@@ -144,7 +153,6 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
     if is_prime:
         usage_text = "🌟 User Plan : Prime"
     else:
-        from Database.userdb import udb  # noqa
         user_data = await mdb.get_user(user_id)
         daily_count = user_data.get("daily_count", 0)
         limits = await mdb.get_global_limits()
@@ -214,15 +222,19 @@ async def handle_share_video(client: Client, query: CallbackQuery):
     elif query.message.document:
         media_type = "document"
 
-    await mdb.async_db["share_links"].insert_one({
-        "link_id": link_id,
-        "file_id": file_id,
-        "media_type": media_type,
-        "shared_by": user_id,
-        "created_at": datetime.now(),
-        "access_count": 0,
-    })
-    bot_info = await client.get_me()
+    # Run DB insert + get_me in parallel
+    bot_info, _ = await asyncio.gather(
+        get_bot_info(client),  # cached — no extra API call
+        mdb.async_db["share_links"].insert_one({
+            "link_id": link_id,
+            "file_id": file_id,
+            "media_type": media_type,
+            "shared_by": user_id,
+            "created_at": datetime.now(),
+            "access_count": 0,
+        }),
+    )
+
     link = f"https://t.me/{bot_info.username}?start=share_{link_id}"
 
     await query.message.reply_text(
@@ -245,8 +257,11 @@ async def handle_share_link_access(client, message, link_id: str):
     file_id = link_data["file_id"]
     media_type = link_data["media_type"]
 
-    await mdb.async_db["share_links"].update_one(
-        {"link_id": link_id}, {"$inc": {"access_count": 1}}
+    # Fire-and-forget the access count update
+    asyncio.create_task(
+        mdb.async_db["share_links"].update_one(
+            {"link_id": link_id}, {"$inc": {"access_count": 1}}
+        )
     )
 
     markup = InlineKeyboardMarkup([[
