@@ -16,14 +16,13 @@ class text(object):
 
 𝘉𝘺 = @{}"""
 
-  ABOUT = """⚠️ This bot is for adults (18+) only. All content is publicly available on the internet. Admin does not host any files and is not responsible for user actions. Use at your own responsibility. Contact admin for any issues."""
+  ABOUT = """⚠️ This bot is for adults (18+) only. All content is publicly available on the internet. Admin does not host any files and is not responsible for user actions. Use at your own responsibility. Contact admin for any issues.\n\n If you want to remove any content from bot. contect to admin with Post Id."""
   
   PRO = """<b><u>🆓 𝖥𝗋𝖾𝖾 𝖯𝗅𝖺𝗇</u></b>
 
 » Under free plan, each day you will get free <b>{free_limit}</b> files per day.    
 » Completely free — no payment required.
-
-If you want to unlock more content and enjoy a smoother experience, consider upgrading to a premium plan:
+» If you want to unlock more content and enjoy a smoother experience, consider upgrading to a premium plan:
 
 <b><u>💎 𝖯𝗋𝖾𝗆𝗂𝗎𝗆 𝖯𝗅𝖺𝗇𝗌</u></b>
 
@@ -31,7 +30,7 @@ If you want to unlock more content and enjoy a smoother experience, consider upg
 » <b>1 Week</b> — 25 INR  
 
 <b>🥇 𝖦𝗈𝗅𝖽 𝖯𝗅𝖺𝗇</b>  
-» <b>15 Days</b> — 40 INR  
+» <b>20 Days</b> — 40 INR  
 
 <b>💠 𝖣𝗂𝖺𝗆𝗈𝗇𝖽 𝖯𝗅𝖺𝗇</b>  
 » <b>1 Month</b> — 60 INR  
@@ -84,7 +83,6 @@ All payments are <b>non-refundable</b>, so please review your choice carefully b
 » /myplan 𝗍𝗈 𝖼𝗁𝖾𝖼𝗄 𝗒𝗈𝗎𝗋 𝖽𝖺𝗂𝗅𝗒 𝗅𝗂𝗆𝗂𝗍 𝖺𝗇𝖽 𝗌𝗎𝖻𝗌𝖼𝗋𝗂𝗉𝗍𝗂𝗈𝗇 𝖽𝖾𝗍𝖺𝗂𝗅𝗌
 
 𝖠𝗅𝗈𝗇𝗀 𝗐𝗂𝗍𝗁 𝗍𝗁𝖾 𝖿𝗋𝖾𝖾 𝗉𝗅𝖺𝗇, 𝗐𝖾 𝗈𝖿𝖿𝖾𝗋 𝗉𝗋𝖾𝗆𝗂𝗎𝗆 𝗉𝗅𝖺𝗇𝗌:
-
 » 𝖲𝗂𝗅𝗏𝖾𝗋
 » 𝖦𝗈𝗅𝖽
 » 𝖣𝗂𝖺𝗆𝗈𝗇𝖽
