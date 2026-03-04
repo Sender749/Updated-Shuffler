@@ -1,23 +1,34 @@
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaVideo
 from pyrogram import Client
 from Script import text
-from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT, IS_FSUB
+from vars import ADMIN_ID, ADMIN_IDS, DELETE_TIMER, PROTECT_CONTENT, IS_FSUB
 from Database.maindb import mdb
 from .cmds import send_video, get_cached_user_data, get_bot_info, USER_ACTIVE_VIDEOS, USER_CURRENT_VIDEO
 from .index import INDEX_TASKS, start_indexing
-import asyncio, string, random, os, shutil
+import asyncio, string, random
 from datetime import datetime
 from .fsub import get_fsub
+
+
+def is_admin(uid: int) -> bool:
+    return uid in ADMIN_IDS
+
 
 @Client.on_callback_query()
 async def callback_query_handler(client, query: CallbackQuery):
     try:
         data = query.data
+        uid = query.from_user.id
+
+        # ── link-generator callbacks ──────────────────────────────────────────
+        if data.startswith("lg_"):
+            from .link_generator import handle_lg_callback
+            await handle_lg_callback(client, query, data)
+            return
 
         # ==================== GENERAL ====================
 
         if data == "start":
-            # Answer immediately so the spinner disappears
             await query.answer()
             try:
                 await query.message.edit_caption(
@@ -68,7 +79,7 @@ async def callback_query_handler(client, query: CallbackQuery):
             )
 
         elif data == "admincmds":
-            if query.from_user.id != ADMIN_ID:
+            if not is_admin(uid):
                 await query.answer("You are not my admin ❌", show_alert=True)
             else:
                 await query.answer()
@@ -81,9 +92,9 @@ async def callback_query_handler(client, query: CallbackQuery):
 
         elif data == "getvideo":
             await query.answer()
-            if IS_FSUB and not await get_fsub(client, query.message, user_id=query.from_user.id):
+            if IS_FSUB and not await get_fsub(client, query.message, user_id=uid):
                 return
-            await send_video(client, query.message, uid=query.from_user.id)
+            await send_video(client, query.message, uid=uid)
 
         elif data.startswith("prev_"):
             await query.answer()
@@ -111,13 +122,13 @@ async def callback_query_handler(client, query: CallbackQuery):
                 )
             except Exception:
                 pass
-            INDEX_TASKS[query.from_user.id] = {
+            INDEX_TASKS[uid] = {
                 "channel_id": channel_id, "state": "await_skip", "msg_id": query.message.id
             }
 
         elif data == "index_cancel":
             await query.answer()
-            task = INDEX_TASKS.get(query.from_user.id)
+            task = INDEX_TASKS.get(uid)
             if task:
                 task["cancel"] = True
             try:
@@ -127,6 +138,7 @@ async def callback_query_handler(client, query: CallbackQuery):
 
     except Exception as e:
         print(f"[callback_query_handler] error: {e}")
+
 
 # ==================== PREVIOUS VIDEO HANDLER ====================
 
@@ -217,9 +229,8 @@ async def handle_share_video(client: Client, query: CallbackQuery):
     elif query.message.document:
         media_type = "document"
 
-    # Run DB insert + get_me in parallel
     bot_info, _ = await asyncio.gather(
-        get_bot_info(client),  # cached — no extra API call
+        get_bot_info(client),
         mdb.async_db["share_links"].insert_one({
             "link_id": link_id,
             "file_id": file_id,
@@ -231,7 +242,6 @@ async def handle_share_video(client: Client, query: CallbackQuery):
     )
 
     link = f"https://t.me/{bot_info.username}?start=share_{link_id}"
-
     await query.message.reply_text(
         f"🔗 **Share Link Generated!**\n\n`{link}`\n\nShare with your buddies 😉",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Copy Link", url=link)]]),
@@ -251,35 +261,22 @@ async def handle_share_link_access(client, message, link_id: str):
 
     file_id = link_data["file_id"]
     media_type = link_data["media_type"]
-
-    # Fire-and-forget the access count update
     asyncio.create_task(
         mdb.async_db["share_links"].update_one(
             {"link_id": link_id}, {"$inc": {"access_count": 1}}
         )
     )
 
-    markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")
-    ]])
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")]])
     caption = "🔗 **Click below button to get more videos❗**"
 
     try:
         if media_type == "video":
-            await client.send_video(
-                message.chat.id, file_id, caption=caption,
-                protect_content=PROTECT_CONTENT, reply_markup=markup,
-            )
+            await client.send_video(message.chat.id, file_id, caption=caption, protect_content=PROTECT_CONTENT, reply_markup=markup)
         elif media_type == "photo":
-            await client.send_photo(
-                message.chat.id, file_id, caption=caption,
-                protect_content=PROTECT_CONTENT, reply_markup=markup,
-            )
+            await client.send_photo(message.chat.id, file_id, caption=caption, protect_content=PROTECT_CONTENT, reply_markup=markup)
         else:
-            await client.send_document(
-                message.chat.id, file_id, caption=caption,
-                protect_content=PROTECT_CONTENT, reply_markup=markup,
-            )
+            await client.send_document(message.chat.id, file_id, caption=caption, protect_content=PROTECT_CONTENT, reply_markup=markup)
     except Exception as e:
         print(f"[handle_share_link_access] error: {e}")
         await message.reply_text("⚠️ Failed to load shared file.")
