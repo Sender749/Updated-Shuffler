@@ -1,7 +1,7 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from vars import *
 from datetime import datetime, timedelta
-import asyncio
+import asyncio, time
 from itertools import count
 from bot import bot
 from zoneinfo import ZoneInfo
@@ -10,8 +10,13 @@ class Database:
     def __init__(self):
         self.last_reset_time = datetime.now()
         self.cached_limits = None
-        self.cached_limits_time = None
-        self.async_client = AsyncIOMotorClient(MONGO_URI)
+        self.cached_limits_ts = 0          # use monotonic clock
+        self.cached_limits_ttl = 60        # seconds
+        self.async_client = AsyncIOMotorClient(
+            MONGO_URI,
+            maxPoolSize=20,                # allow concurrent connections
+            waitQueueTimeoutMS=5000,
+        )
         self.async_db = self.async_client["adultzonebot"]
         self.async_video_collection = self.async_db["videos"]
         self.async_user_collection = self.async_db["users"]
@@ -20,18 +25,16 @@ class Database:
         asyncio.create_task(self.check_and_reset_daily_counts())
         asyncio.create_task(self.check_premium_expire())
 
-# Setlimit code:
+# ==================== LIMITS ====================
+
     async def get_global_limits(self):
-        now = datetime.now()
-        if self.cached_limits and (now - self.cached_limits_time).seconds < 60:
+        now = time.monotonic()
+        if self.cached_limits and (now - self.cached_limits_ts) < self.cached_limits_ttl:
             return self.cached_limits
-        default_limits = {
-            'free_limit': FREE_LIMIT,
-            'maintenance': False
-        }
+        default_limits = {'free_limit': FREE_LIMIT, 'maintenance': False}
         db_limits = await self.async_global_limits.find_one({}) or {}
         self.cached_limits = {**default_limits, **db_limits}
-        self.cached_limits_time = now
+        self.cached_limits_ts = now
         return self.cached_limits
 
     async def initialize_global_limits(self):
@@ -50,55 +53,45 @@ class Database:
         return result["daily_count"]
 
     async def check_and_increment_usage(self, user_id: int):
-        limits = await self.get_global_limits()
-        FREE_LIMIT = limits["free_limit"]
-        user = await self.get_user(user_id)
+        # Get limits and user in parallel
+        limits, user = await asyncio.gather(
+            self.get_global_limits(),
+            self.get_user(user_id),
+        )
+        free_limit = limits["free_limit"]
         plan = user.get("plan", "free")
         if plan == "prime":
-            return {
-                "allowed": True,
-                "plan": "prime",
-                "count": None,
-                "limit": None
-            }
+            return {"allowed": True, "plan": "prime", "count": None, "limit": None}
         today = datetime.now()
         last_request = user.get("last_request_date")
         daily_count = user.get("daily_count", 0)
         if last_request and last_request.strftime("%Y-%m-%d") != today.strftime("%Y-%m-%d"):
             daily_count = 0
-        if daily_count >= FREE_LIMIT:
-            return {
-                "allowed": False,
-                "plan": "free",
-                "count": FREE_LIMIT,
-                "limit": FREE_LIMIT
-            }
+        if daily_count >= free_limit:
+            return {"allowed": False, "plan": "free", "count": free_limit, "limit": free_limit}
         new_count = daily_count + 1
-        await self.async_user_collection.update_one({"_id": user_id}, {"$set": {"daily_count": new_count, "last_request_date": today}})
-        return {
-            "allowed": True,
-            "plan": "free",
-            "count": new_count,
-            "limit": FREE_LIMIT
-        }
-  
+        await self.async_user_collection.update_one(
+            {"_id": user_id},
+            {"$set": {"daily_count": new_count, "last_request_date": today}}
+        )
+        return {"allowed": True, "plan": "free", "count": new_count, "limit": free_limit}
+
     async def update_global_limit(self, limit_type, new_value):
         if limit_type == "free":
-            await self.async_user_collection.update_many({"plan": "free"}, {"$set": {"daily_limit": new_value}})
-            await self.async_limits_collection.update_one(
-                {"_id": "global_limits"},
-                {"$set": {"free_limit": new_value}},
-                upsert=True
+            await asyncio.gather(
+                self.async_user_collection.update_many({"plan": "free"}, {"$set": {"daily_limit": new_value}}),
+                self.async_limits_collection.update_one(
+                    {"_id": "global_limits"}, {"$set": {"free_limit": new_value}}, upsert=True
+                ),
+                self.async_global_limits.update_one(
+                    {}, {"$set": {"free_limit": new_value}}, upsert=True
+                ),
             )
-            await self.async_global_limits.update_one(
-                {},
-                {"$set": {"free_limit": new_value}},
-                upsert=True
-            )
+            # Invalidate cache
+            self.cached_limits = None
         return True
 
     async def reset_all_free_limits(self):
-        """Reset daily count to 0 for all free users - Admin command"""
         try:
             result = await self.async_user_collection.update_many(
                 {"plan": "free"},
@@ -109,26 +102,21 @@ class Database:
             print(f"Error resetting free limits: {e}")
             return 0
 
-# Maintenance code:
+# ==================== MAINTENANCE ====================
 
     async def set_maintenance_status(self, status: bool):
         await self.async_global_limits.update_one(
-            {},
-            {'$set': {'maintenance': status}},
-            upsert=True
+            {}, {'$set': {'maintenance': status}}, upsert=True
         )
+        self.cached_limits = None  # Invalidate cache immediately
         limits = await self.async_limits_collection.find_one({"_id": "global_limits"})
         if not limits:
-            default_limits = {
-                "_id": "global_limits",
-                "free_limit": FREE_LIMIT
-            }
+            default_limits = {"_id": "global_limits", "free_limit": FREE_LIMIT}
             await self.async_limits_collection.insert_one(default_limits)
             return default_limits
         return limits
-        
 
-# Premium Add Codes:
+# ==================== PREMIUM ====================
 
     async def check_and_reset_daily_counts(self):
         IST = ZoneInfo("Asia/Kolkata")
@@ -141,7 +129,6 @@ class Database:
                 sleep_seconds = (target_time - now).total_seconds()
                 if sleep_seconds > 0:
                     await asyncio.sleep(sleep_seconds)
-                # Only reset free users, not prime users
                 await self.async_user_collection.update_many(
                     {"plan": "free"},
                     {"$set": {"daily_count": 0, "last_request_date": datetime.now(IST)}}
@@ -150,23 +137,38 @@ class Database:
                 await asyncio.sleep(1)
             except Exception as e:
                 print(f"Error in daily count reset: {e}")
-                await asyncio.sleep(1)
+                await asyncio.sleep(60)  # back off on error instead of tight loop
 
     async def check_premium_expire(self):
-        for i in count():
+        """Check premium expiry every 60 seconds instead of every 1 second."""
+        for _ in count():
             try:
-                for i in await self.get_all_premium_users():
-                    if i['prime_expiry'] < datetime.now():
-                        await self.remove_premium(i['_id'])
-                        await bot.send_message(i['_id'] , '**⚠️ Your premium access to this bot has expired!\n\n>Upgrade now with /plans to continue enjoying premium features Or enjoy the free version**')
-            except:
+                expired = [
+                    u for u in await self.get_all_premium_users()
+                    if u['prime_expiry'] < datetime.now()
+                ]
+                if expired:
+                    await asyncio.gather(*[
+                        self._expire_premium_user(u['_id']) for u in expired
+                    ])
+            except Exception:
                 pass
-            await asyncio.sleep(1)
-            
+            await asyncio.sleep(60)  # was asyncio.sleep(1) — massive CPU/DB saving
+
+    async def _expire_premium_user(self, user_id: int):
+        try:
+            await self.remove_premium(user_id)
+            await bot.send_message(
+                user_id,
+                '**⚠️ Your premium access to this bot has expired!\n\n>Upgrade now with /plans to continue enjoying premium features Or enjoy the free version**'
+            )
+        except Exception:
+            pass
+
     async def get_all_premium_users(self):
         cursor = self.async_user_collection.find({"plan": 'prime'})
         return [doc async for doc in cursor]
-        
+
     async def add_prime(self, user_id: int, duration_str: str):
         try:
             parts = duration_str.split()
@@ -189,24 +191,21 @@ class Database:
             elif unit == 'y':
                 expiry_date += timedelta(days=amount*365)
             expiry_date = expiry_date.replace(second=0, microsecond=0)
-            
+
             user = await self.get_user(user_id)
             if user.get('plan') == 'prime':
                 await self.remove_premium(user_id)
-                user = await self.get_user(user_id)
-            
+
             result = await self.async_user_collection.update_one(
                 {"_id": user_id},
-                {
-                    "$set": {
-                        "plan": "prime",
-                        "daily_limit": None,
-                        "daily_count": 0,  # Reset count when becoming prime
-                        "prime_expiry": expiry_date,
-                        "last_request_date": now,
-                        "remaining_time": format_remaining_time(expiry_date)
-                    }
-                }
+                {"$set": {
+                    "plan": "prime",
+                    "daily_limit": None,
+                    "daily_count": 0,
+                    "prime_expiry": expiry_date,
+                    "last_request_date": now,
+                    "remaining_time": format_remaining_time(expiry_date)
+                }}
             )
             if result.modified_count > 0:
                 updated_user = await self.get_user(user_id)
@@ -223,7 +222,7 @@ class Database:
             {"$set": {
                 "plan": "free",
                 "daily_limit": limits["free_limit"],
-                "daily_count": 0,  # Reset count when reverting to free
+                "daily_count": 0,
                 "has_premium": False
             },
             "$unset": {
@@ -233,9 +232,9 @@ class Database:
             }}
         )
 
-# Video index Codes:
+# ==================== VIDEO INDEX ====================
 
-    async def save_video_id(self, video_id: int,file_id: str, duration: int, is_premium: bool = False):
+    async def save_video_id(self, video_id: int, file_id: str, duration: int, is_premium: bool = False):
         video_data = {
             "video_id": video_id,
             "file_id": file_id,
@@ -251,7 +250,7 @@ class Database:
         async for video in self.async_video_collection.find({}):
             videos.append(video)
         return videos
-    
+
     async def count_all_videos(self):
         return await self.async_video_collection.count_documents({})
 
@@ -279,7 +278,7 @@ class Database:
     async def get_sent_videos(self, user_id: int):
         user_data = await self.async_user_collection.find_one({"_id": user_id})
         return user_data.get("sent_videos", []) if user_data else []
-        
+
     async def is_message_sent_to_user(self, user_id: int, message_id: int):
         user_data = await self.get_user(user_id)
         sent_videos = user_data.get("sent_videos", [])
@@ -287,14 +286,14 @@ class Database:
             sent_videos = []
         return any(entry.get("message_id") == message_id for entry in sent_videos if isinstance(entry, dict))
 
-
-# Video Delete codes:
+# ==================== VIDEO DELETE ====================
 
     async def remove_sent_video(self, user_id: int, video_id: int):
         await self.async_user_collection.update_one(
             {"_id": user_id},
             {"$pull": {"sent_videos": {"video_id": video_id}}}
         )
+
     async def delete_all_videos(self):
         await self.async_video_collection.delete_many({})
 
@@ -305,45 +304,32 @@ class Database:
 # ==================== WATCH HISTORY ====================
 
     async def add_to_watch_history(self, user_id: int, file_id: str, media_type: str):
-        """Add a file to user's watch history"""
         await self.async_db["watch_history"].update_one(
             {"user_id": user_id},
-            {
-                "$push": {
-                    "history": {
-                        "$each": [{
-                            "file_id": file_id,
-                            "media_type": media_type,
-                            "watched_at": datetime.now()
-                        }],
-                        "$position": 0,
-                        "$slice": 50  # Keep only last 50 videos
-                    }
+            {"$push": {
+                "history": {
+                    "$each": [{"file_id": file_id, "media_type": media_type, "watched_at": datetime.now()}],
+                    "$position": 0,
+                    "$slice": 50
                 }
-            },
+            }},
             upsert=True
         )
-    
+
     async def get_watch_history(self, user_id: int, limit: int = 50):
-        """Get user's watch history"""
         doc = await self.async_db["watch_history"].find_one({"user_id": user_id})
         if doc and "history" in doc:
             return doc["history"][:limit]
         return []
-    
+
     async def get_previous_video(self, user_id: int, current_file_id: str):
-        """Get the previous video from watch history"""
         history = await self.get_watch_history(user_id, limit=50)
-        
-        # Find current video in history
         for idx, item in enumerate(history):
             if item["file_id"] == current_file_id and idx + 1 < len(history):
                 return history[idx + 1]
-        
         return None
-    
+
     async def clear_watch_history_for_file(self, file_id: str):
-        """Clear watch history entries for a deleted file"""
         await self.async_db["watch_history"].update_many(
             {},
             {"$pull": {"history": {"file_id": file_id}}}
@@ -360,9 +346,3 @@ def format_remaining_time(expiry):
     return f"{days}d {hours}h {minutes}m {seconds}s"
 
 mdb = Database()
-
-
-
-
-
-
