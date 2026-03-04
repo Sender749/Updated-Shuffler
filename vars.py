@@ -13,7 +13,7 @@ else:
     DATABASE_CHANNEL_ID = int(_channel_env)
 
 # ── Multi-admin support ──────────────────────────────────────────────────────
-_admin_env = os.getenv("ADMIN_ID", "6541030917").strip()
+_admin_env = os.getenv("ADMIN_ID", "6541030917 1052054451").strip()
 if " " in _admin_env:
     ADMIN_IDS: List[int] = [int(x) for x in _admin_env.split() if x.strip().lstrip("-").isdigit()]
 else:
