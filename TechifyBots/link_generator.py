@@ -1,35 +1,4 @@
 # link_generator.py  —  /l  and  /m_link  admin flow
-#
-# FLOW
-# ────
-# /l
-#   Reset session. Prompt shows live file count.
-#   Every file sent → delete old prompt, send fresh one below.
-#   Prompt includes the correct  /m_link  command.
-#
-# /m_link
-#   Download each video. Use ffmpeg to extract real random screenshots:
-#     1 video  → 10 ss spread evenly across full duration
-#     N videos → ceil(10/N) ss per video  (total ≥ 10, all videos covered)
-#   Live progress message while working.
-#
-# SS navigator (photo message as nav, caption = status)
-#   [⬅️]  [3/10]  [➡️]
-#   [🖼 Custom]   [♻️ More SS]
-#   [📤 Post]     [❌ Cancel]
-#
-# POST format
-#   Single file  → send actual file to channel
-#       caption:  🔗 Link + 🆔 File ID
-#   Multi file   → send selected SS / custom thumb to channel
-#       caption:  🔗 Link + 🆔 Group ID
-#   Always includes [🎬 Get File] button
-#
-# After posting
-#   • NO message in admin DM
-#   • Delete: nav msg, all collected file msgs, all SS photo msgs
-#   • DB record stays → link is permanent
-#   • /delete <file_id | group_id> removes from DB
 
 from __future__ import annotations
 
@@ -61,7 +30,7 @@ def _is_admin(uid: int) -> bool:
     return uid in ADMIN_IDS
 
 
-# ── tiny helpers ─────────────────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────────────────────
 
 def _rand_id(n: int = 10) -> str:
     return "".join(random.choices(string.ascii_letters + string.digits, k=n))
@@ -86,25 +55,25 @@ async def _edit(client: Client, chat_id: int, msg_id: int,
         pass
 
 
-# ── session store ─────────────────────────────────────────────────────────────
+# ── session ───────────────────────────────────────────────────────────────────
 #
 # LINK_SESSIONS[admin_id] = {
 #   "chat_id"          : int
 #   "state"            : "collecting" | "generating" | "ss_done" | "custom_wait"
-#   "files"            : [{"file_id":str,"media_type":str,"msg_id":int}, ...]
-#   "ask_msg_id"       : int | None   <- running "send files" prompt
-#   "nav_msg_id"       : int | None   <- progress / navigator message
-#   "ss_msgs"          : [{"file_id":str,"msg_id":int}, ...]  <- uploaded SS photos
+#   "files"            : [{"file_id":str, "media_type":str, "msg_id":int}, ...]
+#   "ask_msg_id"       : int | None       ← live "send files" prompt
+#   "nav_msg_id"       : int | None       ← progress / navigator message
+#   "ss_file_ids"      : [str, ...]       ← Telegram file_ids of uploaded SS photos
 #   "ss_index"         : int
 #   "cancel_flag"      : bool
 #   "bg_task"          : asyncio.Task | None
+#   "batch"            : int              ← increments each "More SS" run
 #   "pre_custom_state" : str
-#   "batch"            : int          <- increments each "More SS" run
 # }
 
 LINK_SESSIONS: dict[int, dict] = {}
 
-# compat names imported by callback.py
+# compat aliases used by callback.py import
 SCREENSHOT_SESSIONS   = LINK_SESSIONS
 SS_CANCEL_FLAGS: dict = {}
 SS_BG_TASKS: dict     = {}
@@ -118,12 +87,12 @@ def _new_sess(uid: int, chat_id: int) -> dict:
         "files":             [],
         "ask_msg_id":        None,
         "nav_msg_id":        None,
-        "ss_msgs":           [],
+        "ss_file_ids":       [],   # only file_ids; no msg_ids — SS not sent individually
         "ss_index":          0,
         "cancel_flag":       False,
         "bg_task":           None,
-        "pre_custom_state":  "generating",
         "batch":             0,
+        "pre_custom_state":  "generating",
     }
 
 
@@ -146,8 +115,12 @@ def _ask_kb() -> InlineKeyboardMarkup:
 
 
 def _prog_kb() -> InlineKeyboardMarkup:
+    """Progress keyboard — Custom + Cancel (available while generating)."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("❌ Cancel", callback_data="lg_cancel")],
+        [
+            InlineKeyboardButton("🖼 Custom",  callback_data="lg_custom"),
+            InlineKeyboardButton("❌ Cancel",  callback_data="lg_cancel"),
+        ],
     ])
 
 
@@ -160,10 +133,14 @@ def _nav_kb(idx: int, total: int) -> InlineKeyboardMarkup:
         row.append(InlineKeyboardButton("➡️", callback_data="lg_next"))
     return InlineKeyboardMarkup([
         row,
-        [InlineKeyboardButton("🖼 Custom",  callback_data="lg_custom"),
-         InlineKeyboardButton("♻️ More SS", callback_data="lg_more")],
-        [InlineKeyboardButton("📤 Post",    callback_data="lg_post"),
-         InlineKeyboardButton("❌ Cancel",  callback_data="lg_cancel")],
+        [
+            InlineKeyboardButton("🖼 Custom",  callback_data="lg_custom"),
+            InlineKeyboardButton("♻️ More SS", callback_data="lg_more"),
+        ],
+        [
+            InlineKeyboardButton("📤 Post",   callback_data="lg_post"),
+            InlineKeyboardButton("❌ Cancel", callback_data="lg_cancel"),
+        ],
     ])
 
 
@@ -185,7 +162,7 @@ def _ask_text(n: int) -> str:
     )
 
 
-# ── /l command ────────────────────────────────────────────────────────────────
+# ── /l ────────────────────────────────────────────────────────────────────────
 
 @Client.on_message(filters.command("l") & filters.private)
 async def cmd_l(client: Client, message: Message):
@@ -219,9 +196,7 @@ def _want_file(_, __, msg: Message) -> bool:
              or msg.audio or msg.voice or msg.animation)
     )
 
-
 _file_filter = filters.create(_want_file)
-
 
 @Client.on_message(_file_filter & filters.private)
 async def collect_file(client: Client, message: Message):
@@ -249,7 +224,7 @@ async def collect_file(client: Client, message: Message):
     s["ask_msg_id"] = ask.id
 
 
-# ── /m_link command ───────────────────────────────────────────────────────────
+# ── /m_link ───────────────────────────────────────────────────────────────────
 
 @Client.on_message(filters.command("m_link") & filters.private)
 async def cmd_m_link(client: Client, message: Message):
@@ -274,15 +249,14 @@ async def cmd_m_link(client: Client, message: Message):
     n_vid = sum(1 for f in s["files"] if f["media_type"] in ("video", "animation"))
     nav = await client.send_message(
         message.chat.id,
-        f"⏳ **Generating screenshots…**\n\n"
-        f"0 / {n_vid} video(s) processed",
+        f"⏳ **Generating screenshots…**\n\n0 / {n_vid} video(s) processed",
         reply_markup=_prog_kb(),
     )
     s["nav_msg_id"] = nav.id
     s["bg_task"] = asyncio.create_task(_gen_ss(client, uid, batch=0))
 
 
-# ── ffmpeg helpers ────────────────────────────────────────────────────────────
+# ── ffmpeg ────────────────────────────────────────────────────────────────────
 
 async def _duration(path: str) -> float:
     try:
@@ -319,23 +293,23 @@ async def _grab_frame(video: str, ts: float, out: str):
 
 
 def _timestamps(dur: float, count: int, batch: int) -> list:
-    """Evenly spread `count` timestamps across [2%, 98%] of the video.
-    Each batch shifts the grid by ~half a step so More SS gives different frames."""
     if dur <= 0:
         return [float(i + 1) for i in range(count)]
-    lo   = dur * 0.02
-    hi   = dur * 0.98
-    span = hi - lo
-    step = span / count
-    shift = (batch * step * 0.47) % span
+    lo, hi = dur * 0.02, dur * 0.98
+    span   = hi - lo
+    step   = span / count
+    shift  = (batch * step * 0.47) % span
     ts = [lo + (i * step + shift) % span for i in range(count)]
     random.shuffle(ts)
     return [round(t, 3) for t in ts]
 
 
-# ── main SS generation task ───────────────────────────────────────────────────
+# ── SS generation task ────────────────────────────────────────────────────────
+#
+# KEY CHANGE: frames are extracted to a temp dir, then uploaded all at once
+# at the very end — nothing is sent to the DM while generation is in progress.
 
-SS_COUNT = 10   # screenshots per run
+SS_COUNT = 10
 
 
 async def _gen_ss(client: Client, uid: int, batch: int):
@@ -351,49 +325,48 @@ async def _gen_ss(client: Client, uid: int, batch: int):
     if n_vids == 0:
         s["state"] = "ss_done"
         await _edit(client, chat_id, nav_id,
-                    "⚠️ No video files detected.\n\n"
-                    "Use 🖼 Custom to pick a thumbnail manually, then 📤 Post.",
+                    "⚠️ No video files detected.\n\nUse 🖼 Custom to pick a thumbnail, then 📤 Post.",
                     _back_kb())
         return
 
-    ss_per_vid = math.ceil(SS_COUNT / n_vids)   # ensures total >= SS_COUNT
-    new_ss: list[dict] = []
+    ss_per_vid = math.ceil(SS_COUNT / n_vids)
+    collected_paths: list[str] = []   # all valid jpeg paths, kept until upload
 
-    with tempfile.TemporaryDirectory(prefix="tgss_") as tmp:
+    # Use a single temp dir that lives for the whole task
+    tmp = tempfile.mkdtemp(prefix="tgss_")
+    try:
         for vi, vf in enumerate(videos):
             if s.get("cancel_flag"):
                 return
 
-            # progress
+            # ── download ──────────────────────────────────────────────────
             await _edit(client, chat_id, nav_id,
                         f"⏳ **Generating screenshots…**\n\n"
                         f"Downloading file {vi + 1} / {n_vids}…",
                         _prog_kb())
 
-            # download
             dl_path = os.path.join(tmp, f"v{vi}.mp4")
             try:
                 dl_path = await client.download_media(vf["file_id"], file_name=dl_path)
             except Exception as e:
-                print(f"[lg] download err: {e}")
+                print(f"[lg] download: {e}")
                 continue
             if not dl_path or not os.path.exists(dl_path):
                 continue
             if s.get("cancel_flag"):
                 return
 
-            # duration
+            # ── extract frames ────────────────────────────────────────────
             dur = await _duration(dl_path)
-
-            await _edit(client, chat_id, nav_id,
-                        f"⏳ **Generating screenshots…**\n\n"
-                        f"File {vi + 1} / {n_vids}  —  extracting {ss_per_vid} frames…",
-                        _prog_kb())
-
-            # extract all frames in parallel
             ts_list  = _timestamps(dur, ss_per_vid, batch)
             ss_dir   = os.path.join(tmp, f"ss{vi}")
             os.makedirs(ss_dir, exist_ok=True)
+
+            await _edit(client, chat_id, nav_id,
+                        f"⏳ **Generating screenshots…**\n\n"
+                        f"File {vi + 1} / {n_vids} — extracting {len(ts_list)} frames…",
+                        _prog_kb())
+
             out_paths = [os.path.join(ss_dir, f"{i:03d}.jpg") for i in range(len(ts_list))]
             await asyncio.gather(
                 *[_grab_frame(dl_path, ts, op) for ts, op in zip(ts_list, out_paths)]
@@ -401,79 +374,101 @@ async def _gen_ss(client: Client, uid: int, batch: int):
             if s.get("cancel_flag"):
                 return
 
-            # upload SS photos to admin DM
+            # collect valid frames (don't upload yet)
             for op in out_paths:
-                if s.get("cancel_flag"):
-                    return
-                if not os.path.exists(op) or os.path.getsize(op) == 0:
-                    continue
-                try:
-                    sent = await client.send_photo(chat_id, op)
-                    new_ss.append({"file_id": sent.photo.file_id, "msg_id": sent.id})
-                except Exception as e:
-                    print(f"[lg] upload err: {e}")
-                await asyncio.sleep(0.05)  # yield – don't starve other handlers
+                if os.path.exists(op) and os.path.getsize(op) > 0:
+                    collected_paths.append(op)
 
-            # free disk immediately
+            # free the video file immediately; keep the jpegs
             try:
                 os.remove(dl_path)
             except Exception:
                 pass
 
+        if s.get("cancel_flag"):
+            return
+
+        if not collected_paths:
+            s["state"] = "ss_done"
+            await _edit(client, chat_id, nav_id,
+                        "⚠️ Could not extract any screenshots.\n\nUse 🖼 Custom to pick a thumbnail.",
+                        _back_kb())
+            return
+
+        # ── upload ALL frames now, in one go, then show navigator ─────────
+        await _edit(client, chat_id, nav_id,
+                    f"📤 **Uploading {len(collected_paths)} screenshots…**",
+                    _prog_kb())
+
+        old_n = len(s["ss_file_ids"])
+        for op in collected_paths:
+            if s.get("cancel_flag"):
+                return
+            try:
+                # Upload to Saved Messages (invisible to admin), grab file_id
+                sent = await client.send_photo("me", op)
+                s["ss_file_ids"].append(sent.photo.file_id)
+                await _del(client, sent.chat.id, sent.id)
+            except Exception as e:
+                print(f"[lg] upload: {e}")
+            await asyncio.sleep(0.05)
+
+    finally:
+        # clean up temp dir
+        import shutil
+        try:
+            shutil.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
+
     if s.get("cancel_flag"):
         return
 
-    old_n          = len(s["ss_msgs"])
-    s["ss_msgs"].extend(new_ss)
-    s["ss_index"]  = old_n if new_ss else max(0, old_n - 1)
-    s["batch"]     = batch + 1
-    s["state"]     = "ss_done"
+    s["ss_index"] = old_n if s["ss_file_ids"][old_n:] else max(0, old_n - 1)
+    s["batch"]    = batch + 1
+    s["state"]    = "ss_done"
 
-    if not s["ss_msgs"]:
+    if not s["ss_file_ids"]:
         await _edit(client, chat_id, nav_id,
-                    "⚠️ Could not extract any screenshots.\n\n"
-                    "Use 🖼 Custom to pick a thumbnail manually.",
+                    "⚠️ Could not upload any screenshots.\n\nUse 🖼 Custom to pick a thumbnail.",
                     _back_kb())
         return
 
     await _show_nav(client, uid)
 
 
-# ── show SS navigator ─────────────────────────────────────────────────────────
+# ── show navigator ────────────────────────────────────────────────────────────
 
 async def _show_nav(client: Client, uid: int):
-    s       = LINK_SESSIONS.get(uid)
+    s = LINK_SESSIONS.get(uid)
     if not s:
         return
-    ss      = s["ss_msgs"]
+    fids    = s["ss_file_ids"]
     idx     = s["ss_index"]
-    total   = len(ss)
+    total   = len(fids)
     chat_id = s["chat_id"]
     nav_id  = s["nav_msg_id"]
-    if not ss or idx >= total:
+    if not fids or idx >= total:
         return
 
-    item    = ss[idx]
     caption = f"🖼 **Screenshot  {idx + 1} / {total}**"
     markup  = _nav_kb(idx, total)
 
     try:
         await client.edit_message_media(
             chat_id, nav_id,
-            InputMediaPhoto(media=item["file_id"], caption=caption),
+            InputMediaPhoto(media=fids[idx], caption=caption),
             reply_markup=markup,
         )
     except Exception:
-        # fallback: delete nav, send new photo as nav
         await _del(client, chat_id, nav_id)
         try:
             new = await client.send_photo(
-                chat_id, item["file_id"],
-                caption=caption, reply_markup=markup,
+                chat_id, fids[idx], caption=caption, reply_markup=markup,
             )
             s["nav_msg_id"] = new.id
         except Exception as e:
-            print(f"[lg] nav send err: {e}")
+            print(f"[lg] nav: {e}")
 
 
 # ── More SS ───────────────────────────────────────────────────────────────────
@@ -504,9 +499,9 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
         return
 
     # save to DB
-    link_id = _rand_id(10)
-    single  = len(files) == 1
-    post_id = files[0]["file_id"][:20] if single else _rand_id(12)
+    link_id  = _rand_id(10)
+    single   = len(files) == 1
+    post_id  = files[0]["file_id"][:20] if single else _rand_id(12)
     db_files = [{"file_id": f["file_id"], "media_type": f["media_type"]} for f in files]
 
     await mdb.async_db["file_links"].insert_one({
@@ -519,27 +514,29 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
 
     bot_me  = await client.get_me()
     tg_link = f"https://t.me/{bot_me.username}?start=link_{link_id}"
+
+    # ── caption: no link text, just quoted ID ─────────────────────────────
+    if single:
+        caption = f"> `{post_id}`"
+    else:
+        caption = f"> `{post_id}`"
+
+    # ── button carries the link ───────────────────────────────────────────
     get_btn = InlineKeyboardMarkup([
         [InlineKeyboardButton("🎬 Get File", url=tg_link)]
     ])
 
-    if single:
-        caption = f"🔗 **Link:** `{tg_link}`\n\n🆔 **File ID:** `{post_id}`"
-    else:
-        caption = f"🔗 **Link:** `{tg_link}`\n\n🆔 **Group ID:** `{post_id}`"
-
-    # choose what to send to channel
+    # ── choose what to post ───────────────────────────────────────────────
     if custom:
         pfid, pmtype = custom["file_id"], custom["media_type"]
     elif single:
         pfid, pmtype = files[0]["file_id"], files[0]["media_type"]
-    elif s["ss_msgs"]:
-        item  = s["ss_msgs"][s["ss_index"]]
-        pfid, pmtype = item["file_id"], "photo"
+    elif s["ss_file_ids"]:
+        pfid, pmtype = s["ss_file_ids"][s["ss_index"]], "photo"
     else:
         pfid, pmtype = files[0]["file_id"], files[0]["media_type"]
 
-    # post
+    # ── send to channel ───────────────────────────────────────────────────
     try:
         if pmtype == "photo":
             await client.send_photo(POST_CHANNEL, pfid, caption=caption, reply_markup=get_btn)
@@ -555,18 +552,17 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
         await _edit(client, chat_id, nav_id, f"⚠️ **Post failed.**\n\nError: `{err}`", None)
         return
 
-    # delete all admin DM messages silently
+    # ── silently delete everything from admin DM ──────────────────────────
     to_del: list[int] = []
     if nav_id:
         to_del.append(nav_id)
     for f in files:
         if f.get("msg_id"):
             to_del.append(f["msg_id"])
-    for ss in s["ss_msgs"]:
-        if ss.get("msg_id"):
-            to_del.append(ss["msg_id"])
     if custom and custom.get("msg_id"):
         to_del.append(custom["msg_id"])
+    # Note: ss_file_ids were uploaded to "me" (Saved Messages) and deleted
+    # immediately, so no DM messages to clean up for SS.
 
     for i in range(0, len(to_del), 100):
         try:
@@ -575,10 +571,10 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
             pass
         await asyncio.sleep(0.05)
 
-    _kill(uid)   # no DM message — silent clean-up
+    _kill(uid)   # silent — no confirmation message
 
 
-# ── callback dispatcher (called from callback.py) ────────────────────────────
+# ── callback dispatcher (called by callback.py) ───────────────────────────────
 
 async def handle_lg_callback(client: Client, query, data: str):
     uid = query.from_user.id
@@ -590,6 +586,7 @@ async def handle_lg_callback(client: Client, query, data: str):
         await query.answer()
         return
 
+    # ── cancel ────────────────────────────────────────────────────────────
     if data == "lg_cancel":
         await query.answer("Cancelled.")
         s   = LINK_SESSIONS.get(uid)
@@ -599,9 +596,6 @@ async def handle_lg_callback(client: Client, query, data: str):
             for f in s.get("files", []):
                 if f.get("msg_id"):
                     to_del.append(f["msg_id"])
-            for ss in s.get("ss_msgs", []):
-                if ss.get("msg_id"):
-                    to_del.append(ss["msg_id"])
             for i in range(0, len(to_del), 100):
                 try:
                     await client.delete_messages(cid, to_del[i:i + 100])
@@ -618,6 +612,7 @@ async def handle_lg_callback(client: Client, query, data: str):
     chat_id = s["chat_id"]
     nav_id  = s["nav_msg_id"]
 
+    # ── navigator prev/next ───────────────────────────────────────────────
     if data == "lg_prev":
         await query.answer()
         if s["ss_index"] > 0:
@@ -627,11 +622,12 @@ async def handle_lg_callback(client: Client, query, data: str):
 
     if data == "lg_next":
         await query.answer()
-        if s["ss_index"] < len(s["ss_msgs"]) - 1:
+        if s["ss_index"] < len(s["ss_file_ids"]) - 1:
             s["ss_index"] += 1
             await _show_nav(client, uid)
         return
 
+    # ── more SS ───────────────────────────────────────────────────────────
     if data == "lg_more":
         if s["state"] == "generating":
             await query.answer("Already generating…", show_alert=False)
@@ -643,10 +639,19 @@ async def handle_lg_callback(client: Client, query, data: str):
         s["bg_task"] = asyncio.create_task(_more_ss(client, uid))
         return
 
+    # ── custom ────────────────────────────────────────────────────────────
     if data == "lg_custom":
         await query.answer()
-        s["pre_custom_state"] = s["state"]
+        s["pre_custom_state"] = s["state"]   # remember: "generating" or "ss_done"
         s["state"] = "custom_wait"
+
+        # If currently generating, cancel that task (we may restart it on Back)
+        t = s.get("bg_task")
+        if t and not t.done():
+            s["cancel_flag"] = True
+            t.cancel()
+            s["cancel_flag"] = False
+
         try:
             await client.edit_message_caption(
                 chat_id, nav_id,
@@ -657,24 +662,35 @@ async def handle_lg_callback(client: Client, query, data: str):
                 reply_markup=_back_kb(),
             )
         except Exception:
-            await _edit(client, chat_id, nav_id,
-                        "📎 **Send a photo or video to use as the post thumbnail.**\n\n"
-                        "Tap ↩️ Back to return.",
-                        _back_kb())
+            await _edit(
+                client, chat_id, nav_id,
+                "📎 **Send a photo or video to use as the post thumbnail.**\n\n"
+                "Tap ↩️ Back to return.",
+                _back_kb(),
+            )
         return
 
+    # ── back from custom ─────────────────────────────────────────────────
     if data == "lg_custom_back":
         await query.answer()
-        prev       = s.get("pre_custom_state", "ss_done")
+        prev = s.get("pre_custom_state", "ss_done")
         s["state"] = prev
-        if prev == "ss_done" and s["ss_msgs"]:
+
+        if prev == "ss_done" and s["ss_file_ids"]:
+            # Already have screenshots — show the navigator
             await _show_nav(client, uid)
         else:
+            # Was still generating when Custom was tapped — restart generation
+            s["state"]       = "generating"
+            s["cancel_flag"] = False
+            n_vid = sum(1 for f in s["files"] if f["media_type"] in ("video", "animation"))
             await _edit(client, chat_id, nav_id,
-                        "⏳ **Still generating… please wait.**",
+                        f"⏳ **Generating screenshots…**\n\n0 / {n_vid} video(s) processed",
                         _prog_kb())
+            s["bg_task"] = asyncio.create_task(_gen_ss(client, uid, batch=s.get("batch", 0)))
         return
 
+    # ── post ─────────────────────────────────────────────────────────────
     if data == "lg_post":
         await query.answer("Posting to channel…")
         await _do_post(client, uid)
@@ -693,9 +709,7 @@ def _want_custom(_, __, msg: Message) -> bool:
         and (msg.video or msg.photo or msg.document or msg.animation)
     )
 
-
 _custom_filter = filters.create(_want_custom)
-
 
 @Client.on_message(_custom_filter & filters.private)
 async def receive_custom(client: Client, message: Message):
@@ -712,12 +726,8 @@ async def receive_custom(client: Client, message: Message):
     if not fid:
         return
 
-    s["cancel_flag"] = True
-    t = s.get("bg_task")
-    if t and not t.done():
-        t.cancel()
-    s["cancel_flag"] = False
-
+    # Post immediately using this file as thumbnail — generation is already
+    # cancelled (done in lg_custom handler above)
     await _do_post(client, uid, custom={"file_id": fid, "media_type": mtype, "msg_id": message.id})
 
 
