@@ -2,15 +2,21 @@
 #
 # FIXES in this version
 # ─────────────────────
-# 1. USER_IS_BOT: bots can't send to "me". SS photos are uploaded to the
-#    admin's own DM (chat_id), file_id extracted, then deleted immediately.
-#    Admin never sees them — they appear and vanish in <1 s.
+# 1. SS are stored on disk (temp folder) until post is done — never uploaded
+#    to any chat just to grab a file_id. After posting, the temp folder is
+#    deleted cleanly.
 #
-# 2. Bulk-file debounce: when admin sends several files at once, individual
-#    handler calls race. A per-uid lock + 400 ms settle window ensures only
-#    ONE updated prompt is sent after the burst settles.
+# 2. Bulk-file debounce: per-uid lock + 400 ms settle window ensures only
+#    ONE updated prompt is sent after a burst of files settles.
 #
 # 3. Post caption: only quoted file/group ID, link lives in the button.
+#
+# 4. "Get More Videos" button appended below the LAST file sent to a user
+#    via handle_link_access.
+#
+# 5. Link files are deleted after DELETE_TIMER seconds (from vars.py).
+#
+# 6. auto_delete notification message is also deleted after 1 day (86400 s).
 
 from __future__ import annotations
 
@@ -33,7 +39,7 @@ from pyrogram.types import (
     Message,
 )
 
-from vars import ADMIN_IDS, POST_CHANNEL
+from vars import ADMIN_IDS, POST_CHANNEL, DELETE_TIMER
 from Database.maindb import mdb
 
 
@@ -76,14 +82,15 @@ async def _edit(client: Client, chat_id: int, msg_id: int,
 #   "files"            : [{"file_id":str, "media_type":str, "msg_id":int}, ...]
 #   "ask_msg_id"       : int | None
 #   "nav_msg_id"       : int | None
-#   "ss_file_ids"      : [str, ...]        ← file_ids only; never shown in DM
+#   "ss_paths"         : [str, ...]        ← on-disk paths; no DM upload hack
+#   "ss_tmp_dir"       : str | None        ← base temp dir for this session's SS
 #   "ss_index"         : int
 #   "cancel_flag"      : bool
 #   "bg_task"          : asyncio.Task | None
 #   "batch"            : int
 #   "pre_custom_state" : str
-#   "_collect_lock"    : asyncio.Lock      ← prevents race in bulk collection
-#   "_settle_task"     : asyncio.Task|None ← debounce task for bulk files
+#   "_collect_lock"    : asyncio.Lock
+#   "_settle_task"     : asyncio.Task|None
 # }
 
 LINK_SESSIONS: dict[int, dict] = {}
@@ -104,7 +111,8 @@ def _new_sess(uid: int, chat_id: int) -> dict:
         "files":             [],
         "ask_msg_id":        None,
         "nav_msg_id":        None,
-        "ss_file_ids":       [],
+        "ss_paths":          [],   # on-disk paths (no DM upload)
+        "ss_tmp_dir":        None,
         "ss_index":          0,
         "cancel_flag":       False,
         "bg_task":           None,
@@ -124,6 +132,10 @@ def _kill(uid: int):
         t = s.get(key)
         if t and not t.done():
             t.cancel()
+    # Clean up any leftover temp directory
+    tmp = s.get("ss_tmp_dir")
+    if tmp and os.path.isdir(tmp):
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ── markups ───────────────────────────────────────────────────────────────────
@@ -177,7 +189,7 @@ def _ask_text(n: int) -> str:
         f"📁 **Link Generator**\n\n"
         f"Files received: **{n} {word}**\n\n"
         f"Send any file (video · photo · audio · document …)\n\n"
-        f"Send /m\\_link when done to generate screenshots & link."
+        f"Send /m_link when done to generate screenshots & link."
     )
 
 
@@ -203,15 +215,6 @@ async def cmd_l(client: Client, message: Message):
 
 
 # ── file collector with debounce ──────────────────────────────────────────────
-#
-# When the admin sends multiple files at once (album / rapid paste), Pyrogram
-# fires one handler call per file. Without a debounce, each call would delete
-# and re-create the prompt, producing N−1 orphaned messages and a final count
-# that may be wrong due to races.
-#
-# Solution: every handler call just appends the file to the list and
-# (re)schedules a "settle" coroutine that fires after SETTLE_DELAY seconds
-# of silence. Only the settle task actually touches the prompt message.
 
 def _want_file(_, __, msg: Message) -> bool:
     if not msg.from_user:
@@ -244,10 +247,8 @@ async def collect_file(client: Client, message: Message):
     if not fid:
         return
 
-    # Append immediately (no lock needed — GIL protects list.append)
     s["files"].append({"file_id": fid, "media_type": mtype, "msg_id": message.id})
 
-    # Cancel any pending settle task and schedule a fresh one
     old = s.get("_settle_task")
     if old and not old.done():
         old.cancel()
@@ -264,12 +265,10 @@ async def _settle_prompt(client: Client, uid: int, chat_id: int):
         return
 
     n = len(s["files"])
-    # Delete old prompt
     if s["ask_msg_id"]:
         await _del(client, chat_id, s["ask_msg_id"])
         s["ask_msg_id"] = None
 
-    # Send fresh prompt
     try:
         ask = await client.send_message(chat_id, _ask_text(n), reply_markup=_ask_kb())
         s["ask_msg_id"] = ask.id
@@ -293,7 +292,6 @@ async def cmd_m_link(client: Client, message: Message):
         await message.reply_text("⚠️ Send at least one file before /m_link.")
         return
 
-    # Cancel any pending settle task
     t = s.get("_settle_task")
     if t and not t.done():
         t.cancel()
@@ -385,9 +383,18 @@ async def _gen_ss(client: Client, uid: int, batch: int):
         return
 
     ss_per_vid = math.ceil(SS_COUNT / n_vids)
+
+    # Reuse or create a persistent temp dir for this session's screenshots
+    if not s.get("ss_tmp_dir") or not os.path.isdir(s["ss_tmp_dir"]):
+        s["ss_tmp_dir"] = tempfile.mkdtemp(prefix="tgss_")
+    tmp = s["ss_tmp_dir"]
+
+    # Keep a sub-folder per batch so paths never collide
+    batch_dir = os.path.join(tmp, f"batch{batch}")
+    os.makedirs(batch_dir, exist_ok=True)
+
     collected_paths: list[str] = []
 
-    tmp = tempfile.mkdtemp(prefix="tgss_")
     try:
         for vi, vf in enumerate(videos):
             if s.get("cancel_flag"):
@@ -398,7 +405,7 @@ async def _gen_ss(client: Client, uid: int, batch: int):
                         f"Downloading file {vi + 1} / {n_vids}…",
                         _prog_kb())
 
-            dl_path = os.path.join(tmp, f"v{vi}.mp4")
+            dl_path = os.path.join(batch_dir, f"v{vi}.mp4")
             try:
                 dl_path = await client.download_media(vf["file_id"], file_name=dl_path)
             except Exception as e:
@@ -411,7 +418,7 @@ async def _gen_ss(client: Client, uid: int, batch: int):
 
             dur     = await _duration(dl_path)
             ts_list = _timestamps(dur, ss_per_vid, batch)
-            ss_dir  = os.path.join(tmp, f"ss{vi}")
+            ss_dir  = os.path.join(batch_dir, f"ss{vi}")
             os.makedirs(ss_dir, exist_ok=True)
 
             await _edit(client, chat_id, nav_id,
@@ -445,40 +452,24 @@ async def _gen_ss(client: Client, uid: int, batch: int):
                         _back_kb())
             return
 
-        # ── Upload all SS to admin DM, grab file_ids, delete immediately ──
-        # NOTE: bots cannot send to "me" (Saved Messages).
-        # We send to the admin's own chat_id, read the file_id, then delete.
-        # Messages appear and disappear in <1 second — admin won't notice.
-        await _edit(client, chat_id, nav_id,
-                    f"📤 **Uploading {len(collected_paths)} screenshots…**",
-                    _prog_kb())
+        # ── Store paths in session — NO DM upload, NO delete ──────────────
+        old_n = len(s["ss_paths"])
+        s["ss_paths"].extend(collected_paths)
 
-        old_n = len(s["ss_file_ids"])
-        for op in collected_paths:
-            if s.get("cancel_flag"):
-                return
-            try:
-                sent = await client.send_photo(chat_id, op)
-                s["ss_file_ids"].append(sent.photo.file_id)
-                # Delete immediately so it doesn't clutter the DM
-                await _del(client, chat_id, sent.id)
-            except Exception as e:
-                print(f"[lg] upload: {e}")
-            await asyncio.sleep(0.05)
-
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    except Exception as e:
+        print(f"[lg] _gen_ss error: {e}")
+        return
 
     if s.get("cancel_flag"):
         return
 
-    s["ss_index"] = old_n if s["ss_file_ids"][old_n:] else max(0, old_n - 1)
+    s["ss_index"] = old_n if s["ss_paths"][old_n:] else max(0, old_n - 1)
     s["batch"]    = batch + 1
     s["state"]    = "ss_done"
 
-    if not s["ss_file_ids"]:
+    if not s["ss_paths"]:
         await _edit(client, chat_id, nav_id,
-                    "⚠️ Could not upload any screenshots.\n\nUse 🖼 Custom to pick a thumbnail.",
+                    "⚠️ Could not extract any screenshots.\n\nUse 🖼 Custom to pick a thumbnail.",
                     _back_kb())
         return
 
@@ -491,30 +482,29 @@ async def _show_nav(client: Client, uid: int):
     s = LINK_SESSIONS.get(uid)
     if not s:
         return
-    fids    = s["ss_file_ids"]
+    paths   = s["ss_paths"]
     idx     = s["ss_index"]
-    total   = len(fids)
+    total   = len(paths)
     chat_id = s["chat_id"]
     nav_id  = s["nav_msg_id"]
-    if not fids or idx >= total:
+    if not paths or idx >= total:
         return
 
+    path    = paths[idx]
     caption = f"🖼 **Screenshot  {idx + 1} / {total}**"
     markup  = _nav_kb(idx, total)
 
     try:
         await client.edit_message_media(
             chat_id, nav_id,
-            InputMediaPhoto(media=fids[idx], caption=caption),
+            InputMediaPhoto(media=path, caption=caption),
             reply_markup=markup,
         )
     except Exception:
-        # Nav message might be text-only if generation started fresh —
-        # delete and resend as a photo.
         await _del(client, chat_id, nav_id)
         try:
             new = await client.send_photo(
-                chat_id, fids[idx], caption=caption, reply_markup=markup,
+                chat_id, path, caption=caption, reply_markup=markup,
             )
             s["nav_msg_id"] = new.id
         except Exception as e:
@@ -565,10 +555,8 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
     bot_me  = await client.get_me()
     tg_link = f"https://t.me/{bot_me.username}?start=link_{link_id}"
 
-    # ── Caption: just the quoted ID, NO link text ─────────────────────────
     caption = f"> `{post_id}`"
 
-    # ── Button carries the link ───────────────────────────────────────────
     get_btn = InlineKeyboardMarkup([
         [InlineKeyboardButton("🎬 Get File", url=tg_link)]
     ])
@@ -576,17 +564,23 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
     # ── Choose preview media ──────────────────────────────────────────────
     if custom:
         pfid, pmtype = custom["file_id"], custom["media_type"]
+        use_path = None
     elif single:
         pfid, pmtype = files[0]["file_id"], files[0]["media_type"]
-    elif s["ss_file_ids"]:
-        pfid, pmtype = s["ss_file_ids"][s["ss_index"]], "photo"
+        use_path = None
+    elif s["ss_paths"]:
+        # Use on-disk path directly — no prior DM upload needed
+        use_path = s["ss_paths"][s["ss_index"]]
+        pfid, pmtype = None, "photo"
     else:
         pfid, pmtype = files[0]["file_id"], files[0]["media_type"]
+        use_path = None
 
     # ── Send to channel ───────────────────────────────────────────────────
     try:
         if pmtype == "photo":
-            await client.send_photo(POST_CHANNEL, pfid, caption=caption, reply_markup=get_btn)
+            media = use_path if use_path else pfid
+            await client.send_photo(POST_CHANNEL, media, caption=caption, reply_markup=get_btn)
         elif pmtype in ("video", "animation"):
             await client.send_video(POST_CHANNEL, pfid, caption=caption, reply_markup=get_btn)
         elif pmtype == "document":
@@ -599,7 +593,7 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
         await _edit(client, chat_id, nav_id, f"⚠️ **Post failed.**\n\nError: `{err}`", None)
         return
 
-    # ── Silently clean up admin DM ────────────────────────────────────────
+    # ── Clean up admin DM ─────────────────────────────────────────────────
     to_del: list[int] = []
     if nav_id:
         to_del.append(nav_id)
@@ -608,7 +602,6 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
             to_del.append(f["msg_id"])
     if custom and custom.get("msg_id"):
         to_del.append(custom["msg_id"])
-    # SS were uploaded & deleted immediately — nothing left to delete
 
     for i in range(0, len(to_del), 100):
         try:
@@ -616,6 +609,11 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
         except Exception:
             pass
         await asyncio.sleep(0.05)
+
+    # ── Clean up on-disk temp directory ──────────────────────────────────
+    tmp = s.get("ss_tmp_dir")
+    if tmp and os.path.isdir(tmp):
+        shutil.rmtree(tmp, ignore_errors=True)
 
     _kill(uid)
 
@@ -632,7 +630,6 @@ async def handle_lg_callback(client: Client, query, data: str):
         await query.answer()
         return
 
-    # cancel
     if data == "lg_cancel":
         await query.answer("Cancelled.")
         s   = LINK_SESSIONS.get(uid)
@@ -667,7 +664,7 @@ async def handle_lg_callback(client: Client, query, data: str):
 
     if data == "lg_next":
         await query.answer()
-        if s["ss_index"] < len(s["ss_file_ids"]) - 1:
+        if s["ss_index"] < len(s["ss_paths"]) - 1:
             s["ss_index"] += 1
             await _show_nav(client, uid)
         return
@@ -688,7 +685,6 @@ async def handle_lg_callback(client: Client, query, data: str):
         s["pre_custom_state"] = s["state"]
         s["state"] = "custom_wait"
 
-        # Pause any running generation task
         t = s.get("bg_task")
         if t and not t.done():
             s["cancel_flag"] = True
@@ -718,10 +714,9 @@ async def handle_lg_callback(client: Client, query, data: str):
         prev = s.get("pre_custom_state", "ss_done")
         s["state"] = prev
 
-        if prev == "ss_done" and s["ss_file_ids"]:
+        if prev == "ss_done" and s["ss_paths"]:
             await _show_nav(client, uid)
         else:
-            # Was generating — restart from scratch
             s["state"]       = "generating"
             s["cancel_flag"] = False
             n_vid = sum(1 for f in s["files"] if f["media_type"] in ("video", "animation"))
@@ -771,6 +766,9 @@ async def receive_custom(client: Client, message: Message):
 
 
 # ── handle_link_access (called from cmds.py on ?start=link_<id>) ─────────────
+# Changes:
+#   • "Get More Videos" button appended below the LAST sent file
+#   • All sent messages are deleted after DELETE_TIMER seconds
 
 async def handle_link_access(client: Client, message: Message, link_id: str):
     from vars import IS_FSUB, PROTECT_CONTENT
@@ -797,19 +795,53 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
         await message.reply_text("❌ No files found for this link.")
         return
 
-    cid = message.chat.id
-    for f in files:
+    cid          = message.chat.id
+    sent_msg_ids = []
+
+    for idx, f in enumerate(files):
         fid, mtype = f["file_id"], f["media_type"]
+        is_last    = (idx == len(files) - 1)
+
+        # Add "Get More Videos" button only on the last file
+        markup = None
+        if is_last:
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")]
+            ])
+
         try:
-            if   mtype == "video":     await client.send_video(cid, fid, protect_content=PROTECT_CONTENT)
-            elif mtype == "photo":     await client.send_photo(cid, fid, protect_content=PROTECT_CONTENT)
-            elif mtype == "audio":     await client.send_audio(cid, fid, protect_content=PROTECT_CONTENT)
-            elif mtype == "voice":     await client.send_voice(cid, fid, protect_content=PROTECT_CONTENT)
-            elif mtype == "animation": await client.send_animation(cid, fid, protect_content=PROTECT_CONTENT)
-            else:                      await client.send_document(cid, fid, protect_content=PROTECT_CONTENT)
+            if   mtype == "video":
+                sent = await client.send_video(cid, fid, protect_content=PROTECT_CONTENT, reply_markup=markup)
+            elif mtype == "photo":
+                sent = await client.send_photo(cid, fid, protect_content=PROTECT_CONTENT, reply_markup=markup)
+            elif mtype == "audio":
+                sent = await client.send_audio(cid, fid, protect_content=PROTECT_CONTENT, reply_markup=markup)
+            elif mtype == "voice":
+                sent = await client.send_voice(cid, fid, protect_content=PROTECT_CONTENT, reply_markup=markup)
+            elif mtype == "animation":
+                sent = await client.send_animation(cid, fid, protect_content=PROTECT_CONTENT, reply_markup=markup)
+            else:
+                sent = await client.send_document(cid, fid, protect_content=PROTECT_CONTENT, reply_markup=markup)
+
+            sent_msg_ids.append(sent.id)
         except Exception as e:
             print(f"[handle_link_access] {mtype}: {e}")
         await asyncio.sleep(0.3)
+
+    # Schedule deletion of all sent files after DELETE_TIMER seconds
+    if sent_msg_ids:
+        asyncio.create_task(_delete_link_files(client, cid, sent_msg_ids))
+
+
+async def _delete_link_files(client: Client, cid: int, msg_ids: list[int]):
+    """Delete link-provided files after DELETE_TIMER seconds."""
+    await asyncio.sleep(DELETE_TIMER)
+    for i in range(0, len(msg_ids), 100):
+        try:
+            await client.delete_messages(cid, msg_ids[i:i + 100])
+        except Exception:
+            pass
+        await asyncio.sleep(0.05)
 
 
 # ── stubs (keep callback.py import happy) ────────────────────────────────────
