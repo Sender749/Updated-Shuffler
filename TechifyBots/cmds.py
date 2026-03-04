@@ -13,30 +13,30 @@ from bot import bot
 # ==================== PERFORMANCE CACHES ====================
 VIDEO_CACHE = {}
 VIDEO_CACHE_TS = 0
-VIDEO_CACHE_TTL = 300  # Refresh video list every 5 minutes
+VIDEO_CACHE_TTL = 300
 
 USER_ACTIVE_VIDEOS = {}
 USER_RECENT_VIDEOS = {}
 TEMP_CHAT = {}
 
-# User data cache - 60 second TTL
 USER_DATA_CACHE = {}
 USER_CACHE_TTL = 60
 
-# Bot info cache - permanent
 BOT_INFO_CACHE = None
 
-# Verification cache - 60 second TTL (was 30, slight increase reduces DB calls)
 VERIFICATION_CACHE = {}
 VERIFICATION_CACHE_TTL = 60
 
-# Current video tracking for previous/share buttons
 USER_CURRENT_VIDEO = {}
+
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
 
 # ==================== CACHE HELPERS ====================
 
 async def get_cached_user_data(user_id: int):
-    """Get user with 60s cache"""
     now = time.monotonic()
     if user_id in USER_DATA_CACHE:
         data, ts = USER_DATA_CACHE[user_id]
@@ -46,14 +46,13 @@ async def get_cached_user_data(user_id: int):
     USER_DATA_CACHE[user_id] = (user, now)
     return user
 
+
 async def get_cached_verification(user_id: int):
-    """Get verification status with cache — runs all 3 DB ops in parallel"""
     now = time.monotonic()
     if user_id in VERIFICATION_CACHE:
         status, ts = VERIFICATION_CACHE[user_id]
         if now - ts < VERIFICATION_CACHE_TTL:
             return status
-    # Parallel fetch — was 3 sequential awaits
     verified, second, third = await asyncio.gather(
         udb.is_user_verified(user_id),
         udb.use_second_shortener(user_id, TWO_VERIFY_GAP),
@@ -63,26 +62,27 @@ async def get_cached_verification(user_id: int):
     VERIFICATION_CACHE[user_id] = (status, now)
     return status
 
+
 def clear_user_cache(user_id: int):
-    """Clear cache after updates"""
     USER_DATA_CACHE.pop(user_id, None)
     VERIFICATION_CACHE.pop(user_id, None)
 
+
 async def get_bot_info(client):
-    """Get bot info (cached permanently)"""
     global BOT_INFO_CACHE
     if not BOT_INFO_CACHE:
         BOT_INFO_CACHE = await client.get_me()
     return BOT_INFO_CACHE
 
+
 async def _get_videos():
-    """Return cached video list, refreshing only when TTL expires."""
     global VIDEO_CACHE_TS
     now = time.monotonic()
     if "all" not in VIDEO_CACHE or now - VIDEO_CACHE_TS > VIDEO_CACHE_TTL:
         VIDEO_CACHE["all"] = await mdb.get_all_videos()
         VIDEO_CACHE_TS = now
     return VIDEO_CACHE["all"]
+
 
 # ==================== START COMMAND ====================
 
@@ -96,7 +96,6 @@ async def start_command(client, message):
     if IS_FSUB and not await get_fsub(client, message):
         return
 
-    # Handle deep-link parameters
     if len(message.command) > 1:
         data = message.command[1]
         if data.startswith("verify_"):
@@ -113,7 +112,6 @@ async def start_command(client, message):
             await handle_share_link_access(client, message, link_id)
             return
 
-    # Register user in background — don't block the welcome reply
     user_check = udb.get_user(uid)
     if not await user_check:
         asyncio.create_task(register_user(client, message))
@@ -128,12 +126,13 @@ async def start_command(client, message):
         ])
     )
 
+
 async def handle_verify(client, message, data):
-    """Handle verification"""
     parts = data.split("_")
     if len(parts) < 4:
         return
-    _, uid, vid, _ = parts[0], int(parts[1]), parts[2], parts[3]
+    uid = int(parts[1])
+    vid = parts[2]
 
     verify_info = await udb.get_verify_id_info(uid, vid)
     if not verify_info or verify_info.get("verified"):
@@ -141,7 +140,6 @@ async def handle_verify(client, message, data):
         return
 
     ist = pytz.timezone('Asia/Kolkata')
-    # Run both checks in parallel
     is_second, is_third = await asyncio.gather(
         udb.use_second_shortener(uid, TWO_VERIFY_GAP),
         udb.user_verified(uid),
@@ -159,7 +157,6 @@ async def handle_verify(client, message, data):
         udb.update_verify_user(uid, {key: now}),
         udb.update_verify_id_info(uid, vid, {"verified": True})
     )
-
     clear_user_cache(uid)
 
     asyncio.create_task(client.send_message(LOG_VR_CHANNEL, text.VERIFIED_LOG_TEXT.format(message.from_user.mention, uid, now.strftime('%d %B %Y'), num)))
@@ -170,8 +167,8 @@ async def handle_verify(client, message, data):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get Video", callback_data="getvideo")]])
     )
 
+
 async def register_user(client, message):
-    """Register user async (runs in background task)"""
     await udb.addUser(message.from_user.id, message.from_user.first_name)
     bot_info = await get_bot_info(client)
     await client.send_message(LOG_CHNL, text.LOG.format(
@@ -182,18 +179,18 @@ async def register_user(client, message):
         bot_info.username
     ))
 
+
 # ==================== VIDEO SENDING ====================
 
 @Client.on_message(filters.command("getvideos") & filters.private)
 async def get_video_cmd(client, message):
     await send_video(client, message)
 
+
 async def send_video(client, message, uid=None):
-    """Optimized video sending"""
     uid = uid or message.from_user.id
     cid = message.chat.id
 
-    # Parallel checks: banned + limits + user data + videos all at once
     banned, limits, user, videos = await asyncio.gather(
         udb.is_user_banned(uid),
         mdb.get_global_limits(),
@@ -219,7 +216,6 @@ async def send_video(client, message, uid=None):
     else:
         if IS_VERIFY:
             verified, is_second, is_third = await get_cached_verification(uid)
-
             if verified and not is_second and not is_third:
                 usage_text = "**Status : ✅ Verified**"
             else:
@@ -237,12 +233,11 @@ async def send_video(client, message, uid=None):
             usage_text = f"📊 Daily Limit : {usage['count']}/{usage['limit']}"
 
     if not videos:
-        await message.reply_text("No videos")
+        await message.reply_text("No videos available.")
         return
 
     recent = USER_RECENT_VIDEOS.get(uid, set())
     available = [v for v in videos if v["video_id"] not in recent] or videos
-
     if not available:
         USER_RECENT_VIDEOS[uid] = set()
         available = videos
@@ -255,10 +250,8 @@ async def send_video(client, message, uid=None):
     file_id = video["file_id"]
     mins = DELETE_TIMER // 60
     caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}</b>"
-
     USER_CURRENT_VIDEO[uid] = file_id
 
-    # Fetch watch history in parallel with video send prep
     history = await mdb.get_watch_history(uid, limit=2)
     has_previous = len(history) > 0
 
@@ -270,7 +263,6 @@ async def send_video(client, message, uid=None):
         ])
     else:
         buttons.append([InlineKeyboardButton("➡️ Next", callback_data="getvideo")])
-
     buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{uid}")])
 
     try:
@@ -282,42 +274,34 @@ async def send_video(client, message, uid=None):
             sent = message
         else:
             sent = await client.send_video(
-                cid,
-                file_id,
-                caption=caption,
+                cid, file_id, caption=caption,
                 protect_content=PROTECT_CONTENT,
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
 
-        # Fire-and-forget: watch history + auto-delete — don't block the response
         asyncio.create_task(mdb.add_to_watch_history(uid, file_id, "video"))
         USER_ACTIVE_VIDEOS.setdefault(uid, set()).add(sent.id)
         asyncio.create_task(auto_delete(client, cid, sent.id, uid))
     except Exception as e:
         print(f"Video error: {e}")
-        await message.reply_text("⚠️ Failed")
+        await message.reply_text("⚠️ Failed to send video.")
+
 
 async def show_verify(client, message, uid, is_second, is_third):
-    """Show verification"""
     vid = ''.join(random.choices(string.ascii_uppercase + string.digits, k=7))
     TEMP_CHAT[uid] = message.chat.id
-
     bot_info = await get_bot_info(client)
     link = f"https://telegram.me/{bot_info.username}?start=verify_{uid}_{vid}_video"
-
-    # Parallel: create verify ID + shorten link
     _, short = await asyncio.gather(
         udb.create_verify_id(uid, vid),
         get_shortlink(link, is_second, is_third),
     )
-
     if is_third:
         tut, msg = TUTORIAL3, text.THIRDT_VERIFICATION_TEXT
     elif is_second:
         tut, msg = TUTORIAL2, text.SECOND_VERIFICATION_TEXT
     else:
         tut, msg = TUTORIAL, text.VERIFICATION_TEXT
-
     sent = await message.reply_photo(
         photo=VERIFY_IMG,
         caption=msg.format(message.from_user.mention, "User", get_readable_time(TWO_VERIFY_GAP)),
@@ -325,27 +309,24 @@ async def show_verify(client, message, uid, is_second, is_third):
     )
     asyncio.create_task(delete_later(sent, 300))
 
+
 async def delete_later(msg, delay):
-    """Delete after delay"""
     await asyncio.sleep(delay)
     try:
         await msg.delete()
     except:
         pass
 
+
 async def auto_delete(client, cid, mid, uid):
-    """Auto-delete video"""
     try:
         await asyncio.sleep(DELETE_TIMER)
-
         try:
             msg = await client.get_messages(cid, mid)
             if msg.video:
-                file_id = msg.video.file_id
-                asyncio.create_task(mdb.clear_watch_history_for_file(file_id))
+                asyncio.create_task(mdb.clear_watch_history_for_file(msg.video.file_id))
         except:
             pass
-
         try:
             await client.delete_messages(cid, mid)
         except:
@@ -354,6 +335,9 @@ async def auto_delete(client, cid, mid, uid):
             USER_ACTIVE_VIDEOS[uid].discard(mid)
             if not USER_ACTIVE_VIDEOS[uid]:
                 USER_ACTIVE_VIDEOS.pop(uid, None)
-                await client.send_message(cid, "✅ Video Deleted, due to inactivity.\n\nClick below button to get new video.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get New Video", callback_data="getvideo")]]))
+                await client.send_message(
+                    cid, "✅ Video Deleted, due to inactivity.\n\nClick below button to get new video.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get New Video", callback_data="getvideo")]])
+                )
     except Exception as e:
         print(f"Delete error: {e}")
