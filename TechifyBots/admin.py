@@ -1,13 +1,18 @@
 from pyrogram.types import *
 from Database.userdb import udb
 from Database.maindb import mdb
-from vars import ADMIN_ID
+from vars import ADMIN_IDS
 import asyncio
 from pyrogram.errors import *
 from pyrogram import *
 from bot import bot
 import time
 import re
+
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
 
 def parse_button_markup(text: str):
     lines = text.split("\n")
@@ -30,6 +35,7 @@ def parse_button_markup(text: str):
             final_text_lines.append(line)
     return InlineKeyboardMarkup(buttons) if buttons else None, "\n".join(final_text_lines).strip()
 
+
 async def get_readable_time(seconds: int) -> str:
     time_data = []
     for unit, div in [("d", 86400), ("h", 3600), ("m", 60), ("s", 1)]:
@@ -38,11 +44,12 @@ async def get_readable_time(seconds: int) -> str:
             time_data.append(f"{int(value)}{unit}")
     return " ".join(time_data)
 
+
 @Client.on_message(filters.command("stats") & filters.private)
 async def stats_command(client, message):
-    if message.from_user.id != ADMIN_ID:
+    if not is_admin(message.from_user.id):
         await message.delete()
-        await message.reply_text("**🚫 You’re not authorized to use this command...**")
+        await message.reply_text("**🚫 You're not authorized to use this command...**")
         return
     video_count = await mdb.count_all_videos()
     total_users = await udb.get_all_users()
@@ -54,8 +61,11 @@ async def stats_command(client, message):
     STATS += f"**BOT Uptime: {uptime}**"
     await message.reply_text(STATS)
 
-@Client.on_message(filters.command("broadcast") & filters.private & filters.user(ADMIN_ID))
+
+@Client.on_message(filters.command("broadcast") & filters.private)
 async def broadcasting_func(client: Client, message: Message):
+    if not is_admin(message.from_user.id):
+        return
     if not message.reply_to_message:
         return await message.reply("<b>Reply to a message to broadcast.</b>")
     msg = await message.reply_text("Processing broadcast...")
@@ -101,8 +111,11 @@ async def broadcasting_func(client: Client, message: Message):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎭 𝖢𝗅𝗈𝗌𝖾", callback_data="close")]])
     )
 
-@Client.on_message(filters.command("ban") & filters.private & filters.user(ADMIN_ID))
+
+@Client.on_message(filters.command("ban") & filters.private)
 async def ban_user_cmd(client: Client, message: Message):
+    if not is_admin(message.from_user.id):
+        return
     try:
         command_parts = message.text.split()
         if len(command_parts) < 2:
@@ -127,8 +140,11 @@ async def ban_user_cmd(client: Client, message: Message):
     except Exception as e:
         await message.reply_text(f"An error occurred: {str(e)}")
 
-@Client.on_message(filters.command("maintenance") & filters.private & filters.user(ADMIN_ID))
+
+@Client.on_message(filters.command("maintenance") & filters.private)
 async def maintenance_mode(client: Client, message: Message):
+    if not is_admin(message.from_user.id):
+        return
     try:
         args = message.text.split()
         if len(args) < 2:
@@ -143,8 +159,11 @@ async def maintenance_mode(client: Client, message: Message):
     except Exception as e:
         await message.reply_text(f"Error: {str(e)}")
 
-@Client.on_message(filters.command("unban") & filters.private & filters.user(ADMIN_ID))
+
+@Client.on_message(filters.command("unban") & filters.private)
 async def unban_user_cmd(client: Client, message: Message):
+    if not is_admin(message.from_user.id):
+        return
     try:
         command_parts = message.text.split()
         if len(command_parts) < 2:
@@ -165,8 +184,11 @@ async def unban_user_cmd(client: Client, message: Message):
     except Exception as e:
         await message.reply_text(f"An error occurred: {str(e)}")
 
-@Client.on_message(filters.command('banlist') & filters.private & filters.user(ADMIN_ID))
+
+@Client.on_message(filters.command("banlist") & filters.private)
 async def banlist(client, message):
+    if not is_admin(message.from_user.id):
+        return
     response = await message.reply("<b>Fetching banned users...</b>")
     try:
         banned_users = await udb.banned_users.find().to_list(length=None)
@@ -181,23 +203,23 @@ async def banlist(client, message):
     except Exception as e:
         await response.edit(f"<b>Error:</b> <code>{str(e)}</code>")
 
-@Client.on_message(filters.command("deleteall") & filters.private & filters.user(ADMIN_ID))
+
+@Client.on_message(filters.command("deleteall") & filters.private)
 async def delete_all_videos_command(client, message):
+    if not is_admin(message.from_user.id):
+        return
     try:
         t = await message.reply_text("**Proceed to delete all videos ♻️**")
         await mdb.delete_all_videos()
         await t.edit_text("**✅ All videos have been deleted from the database**")
     except Exception as e:
-        await message.reply_text(f"**Error: {str(e)}*")
+        await message.reply_text(f"**Error: {str(e)}**")
 
 
-@Client.on_message(filters.command("delete") & filters.private & filters.user(ADMIN_ID))
+@Client.on_message(filters.command("delete") & filters.private)
 async def delete_video_by_id_command(client, message):
-    """Delete entry from DB.
-    /delete <integer>  -> delete from videos collection by video_id
-    /delete <post_id>  -> delete from file_links by post_id (single-file file_id or group_id)
-    /delete <link_id>  -> delete from file_links by link_id
-    """
+    if not is_admin(message.from_user.id):
+        return
     if len(message.command) < 2:
         await message.reply_text(
             "Usage:\n"
@@ -209,7 +231,6 @@ async def delete_video_by_id_command(client, message):
 
     target = message.command[1].strip()
 
-    # Try integer video_id
     try:
         video_id = int(target)
         deleted = await mdb.delete_video_by_id(video_id)
@@ -219,17 +240,14 @@ async def delete_video_by_id_command(client, message):
     except ValueError:
         pass
 
-    # Try post_id
     r1 = await mdb.async_db["file_links"].delete_one({"post_id": target})
     if r1.deleted_count:
         await message.reply_text(f"Deleted link set with Post ID `{target}`.")
         return
 
-    # Try link_id
     r2 = await mdb.async_db["file_links"].delete_one({"link_id": target})
     if r2.deleted_count:
         await message.reply_text(f"Deleted link with Link ID `{target}`.")
         return
 
     await message.reply_text(f"No record found for ID `{target}`.")
-
