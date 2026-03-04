@@ -5,11 +5,6 @@ from vars import ADMIN_ID, DELETE_TIMER, PROTECT_CONTENT, IS_FSUB
 from Database.maindb import mdb
 from .cmds import send_video, get_cached_user_data, get_bot_info, USER_ACTIVE_VIDEOS, USER_CURRENT_VIDEO
 from .index import INDEX_TASKS, start_indexing
-from .link_generator import (
-    SCREENSHOT_SESSIONS, SS_CANCEL_FLAGS, SS_BG_TASKS, SS_DL_CUSTOM_ACTIVE,
-    LINK_SESSIONS, show_screenshot, generate_screenshots, post_screenshot_to_channel,
-    _cleanup_ss_files, _finish_and_show_navigator,
-)
 import asyncio, string, random, os, shutil
 from datetime import datetime
 from .fsub import get_fsub
