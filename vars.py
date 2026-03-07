@@ -53,3 +53,24 @@ SHORTENER_WEBSITE3 = os.getenv("SHORTENER_WEBSITE3", "instantlinks.co")
 # Verification expiry times (in seconds)
 TWO_VERIFY_GAP = int(os.getenv("TWO_VERIFY_GAP", "21600"))
 THREE_VERIFY_GAP = int(os.getenv("THREE_VERIFY_GAP", "21600"))
+
+# ── Category System ──────────────────────────────────────────────────────────
+# Channels NOT listed in any category are used for the "All" (default) category.
+# Format:
+#      "🔥 Viral":    [-1003782705533],
+#      "💎 Premium": [-1009876543210, -1001122334455],
+CATEGORIES: dict = {
+    "🔥 Viral":    [-1003782705533],
+    "🖼️ Photos":   [-1003764718856],
+    "🔞 Teen":     [-1003722959589],
+    "👩‍🦳 English":  [-1003889132598],
+    "👻 Cartoon":  [-1003855522098],
+    "🖼️ Trans ":   [-1003734799227],
+    "🥸 Desi":     [-1003749645073],
+}
+# How many category buttons to show per row (admin-configurable)
+CATEGORY_BUTTONS_PER_ROW: int = 2
+# Allow premium users to download files (disables protect_content for them)
+PREMIUM_CAN_DOWNLOAD: bool = os.getenv("PREMIUM_CAN_DOWNLOAD", "True").lower() == "true"
+# ─────────────────────────────────────────────────────────────────────────────
+
