@@ -34,6 +34,65 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
+# ==================== CATEGORY HELPERS ====================
+
+def _build_category_markup(current_category: str) -> InlineKeyboardMarkup:
+    """Build inline keyboard with all categories, CATEGORY_BUTTONS_PER_ROW per row."""
+    buttons = []
+    row = []
+
+    all_label = "✅ 🌐 All" if current_category == "all" else "🌐 All"
+    row.append(InlineKeyboardButton(all_label, callback_data="cat_all"))
+    if len(row) >= CATEGORY_BUTTONS_PER_ROW:
+        buttons.append(row)
+        row = []
+
+    for name in CATEGORIES:
+        label = f"✅ {name}" if current_category == name else name
+        row.append(InlineKeyboardButton(label, callback_data=f"cat_{name}"))
+        if len(row) >= CATEGORY_BUTTONS_PER_ROW:
+            buttons.append(row)
+            row = []
+
+    if row:
+        buttons.append(row)
+
+    return InlineKeyboardMarkup(buttons)
+
+
+def _categories_list_text() -> str:
+    """Plain-text list of categories for non-premium users."""
+    lines = ["🌐 All (default)"]
+    for name in CATEGORIES:
+        lines.append(f"• {name}")
+    return "\n".join(lines)
+
+
+async def _get_videos_for_category(category: str):
+    """Return cached video list for a category. Falls back to all if empty."""
+    global VIDEO_CACHE_TS
+    now = time.monotonic()
+
+    cache_key = category
+    if cache_key in VIDEO_CACHE and (now - VIDEO_CACHE_TS) <= VIDEO_CACHE_TTL:
+        return VIDEO_CACHE[cache_key]
+
+    if category == "all":
+        videos = await mdb.get_all_videos()
+    else:
+        channel_ids = CATEGORIES.get(category)
+        if channel_ids:
+            videos = await mdb.get_videos_by_channels(channel_ids)
+            if not videos:
+                videos = await mdb.get_all_videos()
+        else:
+            videos = await mdb.get_all_videos()
+
+    VIDEO_CACHE[cache_key] = videos
+    VIDEO_CACHE_TS = now
+    return videos
+
+
 # ==================== CACHE HELPERS ====================
 
 async def get_cached_user_data(user_id: int):
@@ -75,6 +134,7 @@ async def get_bot_info(client):
     return BOT_INFO_CACHE
 
 
+# kept for backward compat (callback.py uses _get_videos via send_video)
 async def _get_videos():
     global VIDEO_CACHE_TS
     now = time.monotonic()
@@ -180,6 +240,52 @@ async def register_user(client, message):
     ))
 
 
+# ==================== CATEGORY COMMAND ====================
+
+@Client.on_message(filters.command("category") & filters.private)
+async def category_command(client, message):
+    uid = message.from_user.id
+
+    if await udb.is_user_banned(uid):
+        await message.reply("**🚫 You are banned from using this bot**")
+        return
+    if IS_FSUB and not await get_fsub(client, message):
+        return
+
+    user = await get_cached_user_data(uid)
+    is_prime = user.get("plan") == "prime"
+
+    if not CATEGORIES:
+        await message.reply_text("📂 <b>No categories have been configured yet.</b>")
+        return
+
+    current_cat = await mdb.get_user_category(uid)
+
+    if is_prime:
+        markup = _build_category_markup(current_cat)
+        markup.inline_keyboard.append([
+            InlineKeyboardButton("❌ Close", callback_data="close")
+        ])
+        await message.reply_text(
+            f"📂 <b>Choose a Category</b>\n\n"
+            f"Your current category: <b>{current_cat.title() if current_cat == 'all' else current_cat}</b>\n\n"
+            f"<i>Tap a category to switch:</i>",
+            reply_markup=markup
+        )
+    else:
+        cat_list = _categories_list_text()
+        admin_id_int = int(ADMIN_ID) if isinstance(ADMIN_ID, int) else ADMIN_ID[0]
+        await message.reply_text(
+            f"🔒 <b>Categories — Premium Only</b>\n\n"
+            f"<b>Available categories:</b>\n{cat_list}\n\n"
+            f"<i>Upgrade to Premium to select a specific category!</i>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🍿 Buy Premium", callback_data="pro")],
+                [InlineKeyboardButton("💳 Contact Admin", user_id=admin_id_int)],
+            ])
+        )
+
+
 # ==================== VIDEO SENDING ====================
 
 @Client.on_message(filters.command("getvideos") & filters.private)
@@ -191,11 +297,10 @@ async def send_video(client, message, uid=None):
     uid = uid or message.from_user.id
     cid = message.chat.id
 
-    banned, limits, user, videos = await asyncio.gather(
+    banned, limits, user = await asyncio.gather(
         udb.is_user_banned(uid),
         mdb.get_global_limits(),
         get_cached_user_data(uid),
-        _get_videos(),
     )
 
     if banned:
@@ -232,6 +337,10 @@ async def send_video(client, message, uid=None):
                 return
             usage_text = f"📊 Daily Limit : {usage['count']}/{usage['limit']}"
 
+    # ── get category-filtered videos ──────────────────────────────────────
+    user_category = await mdb.get_user_category(uid) if is_prime else "all"
+    videos = await _get_videos_for_category(user_category)
+
     if not videos:
         await message.reply_text("No videos available.")
         return
@@ -249,11 +358,24 @@ async def send_video(client, message, uid=None):
 
     file_id = video["file_id"]
     mins = DELETE_TIMER // 60
-    caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}</b>"
+
+    # Show category in caption for premium users
+    cat_display = ""
+    if is_prime and user_category != "all":
+        cat_display = f"\n📂 Category: {user_category}"
+    elif is_prime:
+        cat_display = "\n📂 Category: All"
+
+    caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}{cat_display}</b>"
     USER_CURRENT_VIDEO[uid] = file_id
 
     history = await mdb.get_watch_history(uid, limit=2)
     has_previous = len(history) > 0
+
+    # ── protect_content: off for premium if PREMIUM_CAN_DOWNLOAD ─────────
+    protect = PROTECT_CONTENT
+    if is_prime and PREMIUM_CAN_DOWNLOAD:
+        protect = False
 
     buttons = []
     if has_previous:
@@ -264,6 +386,8 @@ async def send_video(client, message, uid=None):
     else:
         buttons.append([InlineKeyboardButton("➡️ Next", callback_data="getvideo")])
     buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{uid}")])
+    # Category button (always shown)
+    buttons.append([InlineKeyboardButton("📂 Category", callback_data="show_category")])
 
     try:
         if message.video:
@@ -275,7 +399,7 @@ async def send_video(client, message, uid=None):
         else:
             sent = await client.send_video(
                 cid, file_id, caption=caption,
-                protect_content=PROTECT_CONTENT,
+                protect_content=protect,
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
 
@@ -339,7 +463,6 @@ async def auto_delete(client, cid, mid, uid):
                     cid, "✅ Video Deleted, due to inactivity.\n\nClick below button to get new video.",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get New Video", callback_data="getvideo")]])
                 )
-                # Delete the notification itself after 1 day (86400 s)
                 asyncio.create_task(_delete_notif_after(client, cid, notif.id, 86400))
     except Exception as e:
         print(f"Delete error: {e}")
