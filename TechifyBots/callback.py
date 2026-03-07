@@ -1,9 +1,13 @@
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaVideo
 from pyrogram import Client
 from Script import text
-from vars import ADMIN_ID, ADMIN_IDS, DELETE_TIMER, PROTECT_CONTENT, IS_FSUB
+from vars import ADMIN_ID, ADMIN_IDS, DELETE_TIMER, PROTECT_CONTENT, IS_FSUB, CATEGORIES, PREMIUM_CAN_DOWNLOAD
 from Database.maindb import mdb
-from .cmds import send_video, get_cached_user_data, get_bot_info, USER_ACTIVE_VIDEOS, USER_CURRENT_VIDEO
+from .cmds import (
+    send_video, get_cached_user_data, get_bot_info,
+    USER_ACTIVE_VIDEOS, USER_CURRENT_VIDEO,
+    _build_category_markup, _categories_list_text,
+)
 from .index import INDEX_TASKS, start_indexing
 from .link_generator import (
     SCREENSHOT_SESSIONS, SS_CANCEL_FLAGS, SS_BG_TASKS, SS_DL_CUSTOM_ACTIVE,
@@ -115,6 +119,92 @@ async def callback_query_handler(client, query: CallbackQuery):
             await query.answer()
             await query.message.delete()
 
+        # ==================== CATEGORY ====================
+
+        elif data == "show_category":
+            # Called from the 📂 Category button under a video message.
+            # Delete the video message first, then show category picker as a fresh text msg.
+            await query.answer()
+            user = await get_cached_user_data(uid)
+            is_prime = user.get("plan") == "prime"
+
+            if not CATEGORIES:
+                await query.answer("📂 No categories configured yet.", show_alert=True)
+                return
+
+            current_cat = await mdb.get_user_category(uid)
+
+            if is_prime:
+                markup = _build_category_markup(current_cat)
+                markup.inline_keyboard.append([
+                    InlineKeyboardButton("🎬 Get Video", callback_data="getvideo"),
+                    InlineKeyboardButton("❌ Close", callback_data="close"),
+                ])
+                # Edit the video message → plain text category picker
+                try:
+                    await query.message.delete()
+                except Exception:
+                    pass
+                await client.send_message(
+                    query.message.chat.id,
+                    f"📂 <b>Choose a Category</b>\n\n"
+                    f"Current: <b>{current_cat.title() if current_cat == 'all' else current_cat}</b>\n\n"
+                    f"<i>Tap a category to switch:</i>",
+                    reply_markup=markup
+                )
+            else:
+                admin_id_int = int(ADMIN_ID) if isinstance(ADMIN_ID, int) else ADMIN_ID[0]
+                cat_list = _categories_list_text()
+                await query.answer("🔒 Premium only feature!", show_alert=True)
+                try:
+                    await query.message.delete()
+                except Exception:
+                    pass
+                await client.send_message(
+                    query.message.chat.id,
+                    f"🔒 <b>Categories — Premium Only</b>\n\n"
+                    f"<b>Available categories:</b>\n{cat_list}\n\n"
+                    f"<i>Upgrade to Premium to select a specific category!</i>",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🍿 Buy Premium", callback_data="pro")],
+                        [InlineKeyboardButton("💳 Contact Admin", user_id=admin_id_int)],
+                    ])
+                )
+
+        elif data.startswith("cat_"):
+            # Category selection button pressed
+            await query.answer()
+            user = await get_cached_user_data(uid)
+            is_prime = user.get("plan") == "prime"
+
+            if not is_prime:
+                await query.answer("🔒 This feature is for Premium users only!", show_alert=True)
+                return
+
+            chosen = data[4:]  # strip "cat_"
+            # Validate
+            if chosen != "all" and chosen not in CATEGORIES:
+                await query.answer("❌ Invalid category.", show_alert=True)
+                return
+
+            await mdb.set_user_category(uid, chosen)
+            cat_label = "All" if chosen == "all" else chosen
+
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎬 Get Video", callback_data="getvideo")],
+                [InlineKeyboardButton("📂 Change Category", callback_data="show_category")],
+                [InlineKeyboardButton("❌ Close", callback_data="close")],
+            ])
+
+            try:
+                await query.message.edit_text(
+                    f"✅ <b>Category set to: {cat_label}</b>\n\n"
+                    f"<i>Tap below to get a video from this category!</i>",
+                    reply_markup=markup
+                )
+            except Exception:
+                pass
+
         # ==================== INDEX ====================
 
         elif data.startswith("index_select_"):
@@ -167,15 +257,24 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
     if is_prime:
         usage_text = "🌟 User Plan : Prime"
     else:
-        user_data  = await mdb.get_user(user_id)
+        user_data   = await mdb.get_user(user_id)
         daily_count = user_data.get("daily_count", 0)
         limits      = await mdb.get_global_limits()
         usage_text  = f"📊 Daily Limit : {daily_count}/{limits['free_limit']}"
 
-    mins    = DELETE_TIMER // 60
-    caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}</b>"
+    # Category display for premium
+    cat_display = ""
+    if is_prime:
+        user_category = await mdb.get_user_category(user_id)
+        if user_category != "all":
+            cat_display = f"\n📂 Category: {user_category}"
+        else:
+            cat_display = "\n📂 Category: All"
 
-    history   = await mdb.get_watch_history(user_id, limit=50)
+    mins    = DELETE_TIMER // 60
+    caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}{cat_display}</b>"
+
+    history      = await mdb.get_watch_history(user_id, limit=50)
     prev_file_id = prev_video["file_id"]
     USER_CURRENT_VIDEO[user_id] = prev_file_id
 
@@ -183,6 +282,11 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
         (i for i, item in enumerate(history) if item["file_id"] == prev_file_id), None
     )
     has_previous = current_index is not None and current_index + 1 < len(history)
+
+    # protect_content
+    protect = PROTECT_CONTENT
+    if is_prime and PREMIUM_CAN_DOWNLOAD:
+        protect = False
 
     buttons = []
     if has_previous:
@@ -193,6 +297,7 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
     else:
         buttons.append([InlineKeyboardButton("➡️ Next", callback_data="getvideo")])
     buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{user_id}")])
+    buttons.append([InlineKeyboardButton("📂 Category", callback_data="show_category")])
 
     try:
         media_type = prev_video.get("media_type", "video")
@@ -206,13 +311,13 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
             if media_type == "photo":
                 await client.send_photo(
                     query.message.chat.id, prev_file_id, caption=caption,
-                    protect_content=PROTECT_CONTENT,
+                    protect_content=protect,
                     reply_markup=InlineKeyboardMarkup(buttons),
                 )
             else:
                 await client.send_document(
                     query.message.chat.id, prev_file_id, caption=caption,
-                    protect_content=PROTECT_CONTENT,
+                    protect_content=protect,
                     reply_markup=InlineKeyboardMarkup(buttons),
                 )
     except Exception as e:
