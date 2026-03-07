@@ -121,17 +121,36 @@ class Database:
     async def check_premium_expire(self):
         for _ in count():
             try:
-                expired = [u for u in await self.get_all_premium_users() if u['prime_expiry'] < datetime.now()]
+                now = datetime.now()
+                expired = []
+                for u in await self.get_all_premium_users():
+                    expiry = u.get('prime_expiry')
+                    if not expiry:
+                        continue
+                    # Strip timezone info for naive comparison
+                    if hasattr(expiry, 'tzinfo') and expiry.tzinfo is not None:
+                        from datetime import timezone
+                        expiry = expiry.replace(tzinfo=None)
+                    if expiry < now:
+                        expired.append(u)
                 if expired:
                     await asyncio.gather(*[self._expire_premium_user(u['_id']) for u in expired])
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[check_premium_expire] error: {e}")
             await asyncio.sleep(60)
 
     async def _expire_premium_user(self, user_id: int):
         try:
             await self.remove_premium(user_id)
-            await bot.send_message(user_id, '**⚠️ Your premium access to this bot has expired!\n\n>Upgrade now with /plans to continue enjoying premium features Or enjoy the free version**')
+            # Reset category to "all" when premium expires
+            await self.set_user_category(user_id, "all")
+            await bot.send_message(
+                user_id,
+                "**⚠️ Your premium access has expired!**\n\n"
+                "You have been moved back to the **Free Plan**.\n"
+                "📂 Your category has been reset to **All** (default).\n\n"
+                "Upgrade again to unlock category selection and other premium features!"
+            )
         except Exception:
             pass
 
