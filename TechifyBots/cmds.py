@@ -11,9 +11,9 @@ from .utils import get_shortlink, get_readable_time
 from bot import bot
 
 # ==================== PERFORMANCE CACHES ====================
-VIDEO_CACHE = {}
-VIDEO_CACHE_TS = 0
-VIDEO_CACHE_TTL = 300
+# Per-category caches: {category_name: (videos_list, timestamp)}
+VIDEO_CACHE: dict = {}
+VIDEO_CACHE_TTL = 300   # 5 minutes
 
 USER_ACTIVE_VIDEOS = {}
 USER_RECENT_VIDEOS = {}
@@ -68,14 +68,26 @@ def _categories_list_text() -> str:
     return "\n".join(lines)
 
 
-async def _get_videos_for_category(category: str):
-    """Return cached video list for a category. Falls back to all if empty."""
-    global VIDEO_CACHE_TS
-    now = time.monotonic()
+def _invalidate_video_cache(category: str = None):
+    """Invalidate one category's cache, or all caches."""
+    if category:
+        VIDEO_CACHE.pop(category, None)
+    else:
+        VIDEO_CACHE.clear()
 
-    cache_key = category
-    if cache_key in VIDEO_CACHE and (now - VIDEO_CACHE_TS) <= VIDEO_CACHE_TTL:
-        return VIDEO_CACHE[cache_key]
+
+async def _get_videos_for_category(category: str):
+    """
+    Return video list for a category, using per-category TTL cache.
+    Does NOT fall back to 'all' if category is empty — returns [] so caller
+    can show a proper "no files" message.
+    """
+    now = time.monotonic()
+    cached = VIDEO_CACHE.get(category)
+    if cached:
+        videos, ts = cached
+        if now - ts <= VIDEO_CACHE_TTL:
+            return videos
 
     if category == "all":
         videos = await mdb.get_all_videos()
@@ -83,13 +95,10 @@ async def _get_videos_for_category(category: str):
         channel_ids = CATEGORIES.get(category)
         if channel_ids:
             videos = await mdb.get_videos_by_channels(channel_ids)
-            if not videos:
-                videos = await mdb.get_all_videos()
         else:
             videos = await mdb.get_all_videos()
 
-    VIDEO_CACHE[cache_key] = videos
-    VIDEO_CACHE_TS = now
+    VIDEO_CACHE[category] = (videos, now)
     return videos
 
 
@@ -134,14 +143,9 @@ async def get_bot_info(client):
     return BOT_INFO_CACHE
 
 
-# kept for backward compat (callback.py uses _get_videos via send_video)
+# Legacy compat
 async def _get_videos():
-    global VIDEO_CACHE_TS
-    now = time.monotonic()
-    if "all" not in VIDEO_CACHE or now - VIDEO_CACHE_TS > VIDEO_CACHE_TTL:
-        VIDEO_CACHE["all"] = await mdb.get_all_videos()
-        VIDEO_CACHE_TS = now
-    return VIDEO_CACHE["all"]
+    return await _get_videos_for_category("all")
 
 
 # ==================== START COMMAND ====================
@@ -151,7 +155,10 @@ async def start_command(client, message):
     uid = message.from_user.id
 
     if await udb.is_user_banned(uid):
-        await message.reply("**🚫 You are banned from using this bot**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support", url=f"https://t.me/{ADMIN_USERNAME}")]]))
+        await message.reply(
+            "**🚫 You are banned from using this bot**",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support", url=f"https://t.me/{ADMIN_USERNAME}")]])
+        )
         return
     if IS_FSUB and not await get_fsub(client, message):
         return
@@ -182,7 +189,8 @@ async def start_command(client, message):
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🎬 Get Video", callback_data="getvideo")],
             [InlineKeyboardButton("🍿 𝖡𝗎𝗒 𝖲𝗎𝖻𝗌𝖼𝗋𝗂𝗉𝗍𝗂𝗈𝗇 🍾", callback_data="pro")],
-            [InlineKeyboardButton("ℹ️ Disclaimer", callback_data="about"), InlineKeyboardButton("📚 Help", callback_data="help")]
+            [InlineKeyboardButton("ℹ️ Disclaimer", callback_data="about"),
+             InlineKeyboardButton("📚 Help", callback_data="help")]
         ])
     )
 
@@ -219,7 +227,10 @@ async def handle_verify(client, message, data):
     )
     clear_user_cache(uid)
 
-    asyncio.create_task(client.send_message(LOG_VR_CHANNEL, text.VERIFIED_LOG_TEXT.format(message.from_user.mention, uid, now.strftime('%d %B %Y'), num)))
+    asyncio.create_task(client.send_message(
+        LOG_VR_CHANNEL,
+        text.VERIFIED_LOG_TEXT.format(message.from_user.mention, uid, now.strftime('%d %B %Y'), num)
+    ))
 
     await message.reply_photo(
         photo=VERIFY_IMG,
@@ -263,12 +274,10 @@ async def category_command(client, message):
 
     if is_prime:
         markup = _build_category_markup(current_cat)
-        markup.inline_keyboard.append([
-            InlineKeyboardButton("❌ Close", callback_data="close")
-        ])
+        markup.inline_keyboard.append([InlineKeyboardButton("❌ Close", callback_data="close")])
         await message.reply_text(
             f"📂 <b>Choose a Category</b>\n\n"
-            f"Your current category: <b>{current_cat.title() if current_cat == 'all' else current_cat}</b>\n\n"
+            f"Current: <b>{'All' if current_cat == 'all' else current_cat}</b>\n\n"
             f"<i>Tap a category to switch:</i>",
             reply_markup=markup
         )
@@ -293,7 +302,72 @@ async def get_video_cmd(client, message):
     await send_video(client, message)
 
 
-async def send_video(client, message, uid=None):
+def _make_file_buttons(uid: int, has_previous: bool) -> list:
+    """Build the standard button rows for a file message."""
+    buttons = []
+    if has_previous:
+        buttons.append([
+            InlineKeyboardButton("⬅️ Back", callback_data=f"prev_{uid}"),
+            InlineKeyboardButton("➡️ Next", callback_data="getvideo"),
+        ])
+    else:
+        buttons.append([InlineKeyboardButton("➡️ Next", callback_data="getvideo")])
+    buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{uid}")])
+    buttons.append([InlineKeyboardButton("📂 Category", callback_data="show_category")])
+    return buttons
+
+
+async def _send_file(client, cid: int, file_id: str, media_type: str,
+                     caption: str, protect: bool, buttons: list,
+                     edit_message=None):
+    """
+    Send or edit a file of any media type.
+    If edit_message is provided, tries to edit it; otherwise sends fresh.
+    Returns the sent/edited message.
+    """
+    markup = InlineKeyboardMarkup(buttons)
+
+    # Try editing if we have a message and it's the same type
+    if edit_message:
+        try:
+            if media_type == "video" and edit_message.video:
+                await edit_message.edit_media(
+                    InputMediaVideo(media=file_id, caption=caption),
+                    reply_markup=markup
+                )
+                return edit_message
+        except Exception:
+            pass
+        # Can't edit → delete old message and send fresh
+        try:
+            await edit_message.delete()
+        except Exception:
+            pass
+
+    # Send fresh based on media type
+    kwargs = dict(caption=caption, protect_content=protect, reply_markup=markup)
+    if media_type == "video":
+        return await client.send_video(cid, file_id, **kwargs)
+    elif media_type == "photo":
+        return await client.send_photo(cid, file_id, **kwargs)
+    elif media_type == "document":
+        return await client.send_document(cid, file_id, **kwargs)
+    elif media_type == "audio":
+        return await client.send_audio(cid, file_id, **kwargs)
+    elif media_type in ("voice",):
+        return await client.send_voice(cid, file_id, **kwargs)
+    elif media_type == "animation":
+        return await client.send_animation(cid, file_id, **kwargs)
+    else:
+        # fallback
+        return await client.send_document(cid, file_id, **kwargs)
+
+
+async def send_video(client, message, uid=None, delete_prev_msg=False):
+    """
+    Main file-sending function.
+    delete_prev_msg=True: delete `message` before sending (used after category select).
+    """
     uid = uid or message.from_user.id
     cid = message.chat.id
 
@@ -342,29 +416,53 @@ async def send_video(client, message, uid=None):
     videos = await _get_videos_for_category(user_category)
 
     if not videos:
-        await message.reply_text("No videos available.")
+        # Strictly no files in that category — do NOT fallback
+        cat_name = "All" if user_category == "all" else user_category
+        no_file_markup = None
+        if is_prime and user_category != "all":
+            no_file_markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📂 Change Category", callback_data="show_category")],
+                [InlineKeyboardButton("🌐 Switch to All", callback_data="cat_all")],
+            ])
+        if delete_prev_msg:
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            await client.send_message(
+                cid,
+                f"📭 <b>No files found in category: {cat_name}</b>\n\n"
+                f"<i>Try switching to a different category.</i>",
+                reply_markup=no_file_markup
+            )
+        else:
+            await message.reply_text(
+                f"📭 <b>No files found in category: {cat_name}</b>\n\n"
+                f"<i>Try switching to a different category.</i>",
+                reply_markup=no_file_markup
+            )
         return
 
     recent = USER_RECENT_VIDEOS.get(uid, set())
-    available = [v for v in videos if v["video_id"] not in recent] or videos
+    available = [v for v in videos if v["video_id"] not in recent]
     if not available:
         USER_RECENT_VIDEOS[uid] = set()
         available = videos
 
-    video = random.choice(available)
-    USER_RECENT_VIDEOS.setdefault(uid, set()).add(video["video_id"])
-    if len(USER_RECENT_VIDEOS[uid]) > 10:
+    item = random.choice(available)
+    USER_RECENT_VIDEOS.setdefault(uid, set()).add(item["video_id"])
+    if len(USER_RECENT_VIDEOS[uid]) > 20:
         USER_RECENT_VIDEOS[uid] = set()
 
-    file_id = video["file_id"]
+    file_id = item["file_id"]
+    media_type = item.get("media_type", "video")
     mins = DELETE_TIMER // 60
 
-    # Show category in caption for premium users
+    # Category line in caption (premium only)
     cat_display = ""
-    if is_prime and user_category != "all":
-        cat_display = f"\n📂 Category: {user_category}"
-    elif is_prime:
-        cat_display = "\n📂 Category: All"
+    if is_prime:
+        cat_name = "All" if user_category == "all" else user_category
+        cat_display = f"\n📂 Category: {cat_name}"
 
     caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}{cat_display}</b>"
     USER_CURRENT_VIDEO[uid] = file_id
@@ -372,43 +470,37 @@ async def send_video(client, message, uid=None):
     history = await mdb.get_watch_history(uid, limit=2)
     has_previous = len(history) > 0
 
-    # ── protect_content: off for premium if PREMIUM_CAN_DOWNLOAD ─────────
+    # protect_content — off for premium users if PREMIUM_CAN_DOWNLOAD is enabled
     protect = PROTECT_CONTENT
     if is_prime and PREMIUM_CAN_DOWNLOAD:
         protect = False
 
-    buttons = []
-    if has_previous:
-        buttons.append([
-            InlineKeyboardButton("⬅️ Back", callback_data=f"prev_{uid}"),
-            InlineKeyboardButton("➡️ Next", callback_data="getvideo")
-        ])
-    else:
-        buttons.append([InlineKeyboardButton("➡️ Next", callback_data="getvideo")])
-    buttons.append([InlineKeyboardButton("🔗 Share", callback_data=f"share_{uid}")])
-    # Category button (always shown)
-    buttons.append([InlineKeyboardButton("📂 Category", callback_data="show_category")])
+    buttons = _make_file_buttons(uid, has_previous)
+
+    # Decide whether to edit existing message or delete+send fresh
+    edit_msg = None
+    if not delete_prev_msg:
+        # Only try to edit if it's the same media type
+        if media_type == "video" and getattr(message, "video", None):
+            edit_msg = message
+
+    if delete_prev_msg:
+        try:
+            await message.delete()
+        except Exception:
+            pass
 
     try:
-        if message.video:
-            await message.edit_media(
-                InputMediaVideo(media=file_id, caption=caption),
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
-            sent = message
-        else:
-            sent = await client.send_video(
-                cid, file_id, caption=caption,
-                protect_content=protect,
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
-
-        asyncio.create_task(mdb.add_to_watch_history(uid, file_id, "video"))
+        sent = await _send_file(
+            client, cid, file_id, media_type, caption, protect, buttons,
+            edit_message=edit_msg
+        )
+        asyncio.create_task(mdb.add_to_watch_history(uid, file_id, media_type))
         USER_ACTIVE_VIDEOS.setdefault(uid, set()).add(sent.id)
         asyncio.create_task(auto_delete(client, cid, sent.id, uid))
     except Exception as e:
-        print(f"Video error: {e}")
-        await message.reply_text("⚠️ Failed to send video.")
+        print(f"[send_video] error: {e}")
+        await client.send_message(cid, "⚠️ Failed to send file.")
 
 
 async def show_verify(client, message, uid, is_second, is_third):
@@ -429,7 +521,10 @@ async def show_verify(client, message, uid, is_second, is_third):
     sent = await message.reply_photo(
         photo=VERIFY_IMG,
         caption=msg.format(message.from_user.mention, "User", get_readable_time(TWO_VERIFY_GAP)),
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("♻️ Verify", url=short)], [InlineKeyboardButton("❓ How to verify", url=tut)]])
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("♻️ Verify", url=short)],
+            [InlineKeyboardButton("❓ How to verify", url=tut)]
+        ])
     )
     asyncio.create_task(delete_later(sent, 300))
 
@@ -438,7 +533,7 @@ async def delete_later(msg, delay):
     await asyncio.sleep(delay)
     try:
         await msg.delete()
-    except:
+    except Exception:
         pass
 
 
@@ -447,29 +542,29 @@ async def auto_delete(client, cid, mid, uid):
         await asyncio.sleep(DELETE_TIMER)
         try:
             msg = await client.get_messages(cid, mid)
-            if msg.video:
+            if msg and msg.video:
                 asyncio.create_task(mdb.clear_watch_history_for_file(msg.video.file_id))
-        except:
+        except Exception:
             pass
         try:
             await client.delete_messages(cid, mid)
-        except:
+        except Exception:
             pass
         if uid in USER_ACTIVE_VIDEOS:
             USER_ACTIVE_VIDEOS[uid].discard(mid)
             if not USER_ACTIVE_VIDEOS[uid]:
                 USER_ACTIVE_VIDEOS.pop(uid, None)
                 notif = await client.send_message(
-                    cid, "✅ Video Deleted, due to inactivity.\n\nClick below button to get new video.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get New Video", callback_data="getvideo")]])
+                    cid,
+                    "✅ File deleted due to inactivity.\n\nClick below to get a new file.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get File", callback_data="getvideo")]])
                 )
                 asyncio.create_task(_delete_notif_after(client, cid, notif.id, 86400))
     except Exception as e:
-        print(f"Delete error: {e}")
+        print(f"[auto_delete] error: {e}")
 
 
 async def _delete_notif_after(client, cid, mid, delay):
-    """Delete a notification message after `delay` seconds."""
     try:
         await asyncio.sleep(delay)
         await client.delete_messages(cid, mid)
