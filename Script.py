@@ -81,6 +81,7 @@ All payments are <b>non-refundable</b>, so please review your choice carefully b
 
 » /getvideos 𝗍𝗈 𝗋𝖾𝗊𝗎𝖾𝗌𝗍 𝖺 𝖺𝖽𝗎𝗅𝗍 𝗏𝗂𝖽𝖾𝗈
 » /myplan 𝗍𝗈 𝖼𝗁𝖾𝖼𝗄 𝗒𝗈𝗎𝗋 𝖽𝖺𝗂𝗅𝗒 𝗅𝗂𝗆𝗂𝗍 𝖺𝗇𝖽 𝗌𝗎𝖻𝗌𝖼𝗋𝗂𝗉𝗍𝗂𝗈𝗇 𝖽𝖾𝗍𝖺𝗂𝗅𝗌
+» /category 𝗍𝗈 𝖼𝗁𝗈𝗈𝗌𝖾 𝖺 𝗏𝗂𝖽𝖾𝗈 𝖼𝖺𝗍𝖾𝗀𝗈𝗋𝗒 (𝖯𝗋𝖾𝗆𝗂𝗎𝗆)
 
 𝖠𝗅𝗈𝗇𝗀 𝗐𝗂𝗍𝗁 𝗍𝗁𝖾 𝖿𝗋𝖾𝖾 𝗉𝗅𝖺𝗇, 𝗐𝖾 𝗈𝖿𝖿𝖾𝗋 𝗉𝗋𝖾𝗆𝗂𝗎𝗆 𝗉𝗅𝖺𝗇𝗌:
 » 𝖲𝗂𝗅𝗏𝖾𝗋
