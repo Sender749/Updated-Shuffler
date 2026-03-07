@@ -16,7 +16,7 @@ def is_waiting_skip(_, __, message):
 
 skip_filter = create(is_waiting_skip)
 
-async def save_media(msg: Message):
+async def save_media(msg: Message, source_channel_id: int = None):
     """Save any media type"""
     media = None
     media_type = None
@@ -37,13 +37,19 @@ async def save_media(msg: Message):
         return False
 
     if not await mdb.async_video_collection.find_one({"video_id": msg.id}):
-        await mdb.async_video_collection.insert_one({
+        doc = {
             "video_id": msg.id,
             "file_id": media.file_id,
             "media_type": media_type,
             "duration": duration,
             "added_at": datetime.now()
-        })
+        }
+        # Store the channel this came from for category filtering
+        if source_channel_id:
+            doc["source_channel_id"] = source_channel_id
+        elif msg.chat and msg.chat.id:
+            doc["source_channel_id"] = msg.chat.id
+        await mdb.async_video_collection.insert_one(doc)
         return True
     return False
 
@@ -59,10 +65,10 @@ CHANNEL_LIST = DATABASE_CHANNEL_ID if isinstance(DATABASE_CHANNEL_ID, list) else
 async def auto_index(client: Client, message: Message):
     """Auto-index from all database channels"""
     try:
-        await save_media(message)
+        await save_media(message, source_channel_id=message.chat.id)
     except FloodWait as e:
         await asyncio.sleep(e.value)
-        await save_media(message)
+        await save_media(message, source_channel_id=message.chat.id)
     except Exception as e:
         print(f"Auto index error: {e}")
 
@@ -173,7 +179,7 @@ async def start_indexing(client: Client, user_id: int):
         consecutive_missing = 0
         
         try:
-            if await save_media(msg):
+            if await save_media(msg, source_channel_id=channel_id):
                 saved += 1
             else:
                 duplicate += 1
