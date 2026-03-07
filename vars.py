@@ -6,7 +6,7 @@ API_HASH = os.getenv("API_HASH", "2302adc174dbc954ae5081eda5131166")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://gd3251791_db_user:GDPQbmyXAEFDGpbL@cluster0.6jxsnxc.mongodb.net/?appName=Cluster0")
 
-_channel_env = os.getenv("DATABASE_CHANNEL_ID", "-1002517753823")
+_channel_env = os.getenv("DATABASE_CHANNEL_ID", "-1002517753823 -1003782705533 -1003764718856 -1003734799227 -1003722959589 -1003889132598 -1003855522098 -1003749645073")
 if " " in _channel_env:
     DATABASE_CHANNEL_ID = [int(ch.strip()) for ch in _channel_env.split() if ch.strip().lstrip("-").isdigit()]
 else:
