@@ -262,6 +262,29 @@ class Database:
             {}, {"$pull": {"history": {"file_id": file_id}}}
         )
 
+    # ── USER CATEGORY ─────────────────────────────────────────────────────────
+
+    async def get_user_category(self, user_id: int) -> str:
+        """Return the user's selected category name, or 'all' if not set."""
+        doc = await self.async_user_collection.find_one({"_id": user_id}, {"category": 1})
+        return (doc or {}).get("category", "all")
+
+    async def set_user_category(self, user_id: int, category: str):
+        """Persist the user's chosen category."""
+        await self.async_user_collection.update_one(
+            {"_id": user_id},
+            {"$set": {"category": category}},
+            upsert=True,
+        )
+
+    async def get_videos_by_channels(self, channel_ids: list):
+        """Return videos whose source_channel_id is in channel_ids."""
+        return [
+            v async for v in self.async_video_collection.find(
+                {"source_channel_id": {"$in": channel_ids}}
+            )
+        ]
+
 
 def format_remaining_time(expiry):
     delta = expiry - datetime.now()
