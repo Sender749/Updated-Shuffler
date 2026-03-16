@@ -1,6 +1,5 @@
 from pyrogram.types import (
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
-    InputMediaVideo, InputMediaPhoto, InputMediaDocument, InputMediaAudio,
 )
 from pyrogram import Client
 from Script import text
@@ -112,9 +111,14 @@ async def callback_query_handler(client, query: CallbackQuery):
             await query.answer()
             if IS_FSUB and not await get_fsub(client, query.message, user_id=uid):
                 return
-            # If this is a plain text message (category success msg), delete it first
             msg = query.message
-            is_text_msg = not (msg.video or msg.photo or msg.document or msg.audio or msg.voice or msg.animation)
+            # Check if this message has any media that can be edited in-place
+            has_media = any([
+                msg.video, msg.photo, msg.document,
+                msg.audio, msg.voice, msg.animation,
+            ])
+            # If it's a plain text message (e.g. category success), delete it first
+            is_text_msg = not has_media
             await send_video(client, msg, uid=uid, delete_prev_msg=is_text_msg)
 
         elif data.startswith("prev_"):
@@ -339,16 +343,39 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
     buttons = _make_file_buttons(user_id, has_previous)
     markup = InlineKeyboardMarkup(buttons)
 
-    try:
-        if media_type == "video" and query.message.video:
-            # Same type — edit in place
-            await query.message.edit_media(
-                InputMediaVideo(media=prev_file_id, caption=caption),
-                reply_markup=markup,
-            )
+    from pyrogram.types import (
+        InputMediaVideo, InputMediaPhoto, InputMediaDocument,
+        InputMediaAudio, InputMediaAnimation,
+    )
+
+    def _make_input_media(fid, mtype, cap):
+        if mtype == "video":
+            return InputMediaVideo(media=fid, caption=cap)
+        elif mtype == "photo":
+            return InputMediaPhoto(media=fid, caption=cap)
+        elif mtype == "document":
+            return InputMediaDocument(media=fid, caption=cap)
+        elif mtype == "audio":
+            return InputMediaAudio(media=fid, caption=cap)
+        elif mtype == "animation":
+            return InputMediaAnimation(media=fid, caption=cap)
         else:
-            # Different type or no video — delete and resend
+            return InputMediaDocument(media=fid, caption=cap)
+
+    try:
+        # Always try edit_media first — it works across all type transitions
+        await query.message.edit_media(
+            _make_input_media(prev_file_id, media_type, caption),
+            reply_markup=markup,
+        )
+    except Exception as e:
+        print(f"[handle_previous_video] edit_media error: {e}")
+        # Fallback: delete and resend
+        try:
             await query.message.delete()
+        except Exception:
+            pass
+        try:
             kwargs = dict(caption=caption, protect_content=protect, reply_markup=markup)
             if media_type == "video":
                 await client.send_video(query.message.chat.id, prev_file_id, **kwargs)
@@ -356,15 +383,15 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
                 await client.send_photo(query.message.chat.id, prev_file_id, **kwargs)
             elif media_type == "audio":
                 await client.send_audio(query.message.chat.id, prev_file_id, **kwargs)
-            elif media_type in ("voice",):
+            elif media_type == "voice":
                 await client.send_voice(query.message.chat.id, prev_file_id, **kwargs)
             elif media_type == "animation":
                 await client.send_animation(query.message.chat.id, prev_file_id, **kwargs)
             else:
                 await client.send_document(query.message.chat.id, prev_file_id, **kwargs)
-    except Exception as e:
-        print(f"[handle_previous_video] error: {e}")
-        await query.answer("⚠️ Failed to load previous file", show_alert=True)
+        except Exception as e2:
+            print(f"[handle_previous_video] resend error: {e2}")
+            await query.answer("⚠️ Failed to load previous file", show_alert=True)
 
 
 # ==================== SHARE HANDLER ====================
