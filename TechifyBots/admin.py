@@ -51,15 +51,43 @@ async def stats_command(client, message):
         await message.delete()
         await message.reply_text("**🚫 You're not authorized to use this command...**")
         return
-    video_count = await mdb.count_all_videos()
-    total_users = await udb.get_all_users()
+
+    loading = await message.reply_text("⏳ Fetching stats...")
+
+    from vars import DATABASE_CHANNEL_ID, CATEGORIES
+    channel_list = DATABASE_CHANNEL_ID if isinstance(DATABASE_CHANNEL_ID, list) else [DATABASE_CHANNEL_ID]
+
+    # Gather totals concurrently
+    total_files, total_users, premium_users = await asyncio.gather(
+        mdb.count_all_videos(),
+        udb.get_all_users(),
+        mdb.get_all_premium_users(),
+    )
+
     bot_uptime = int(time.time() - bot.START_TIME)
     uptime = await get_readable_time(bot_uptime)
-    STATS = ">**🤖 Bot Statistics**\n\n"
-    STATS += f"**Total Users: {len(total_users)}\n**"
-    STATS += f"**Total Files in DB: {video_count}\n**"
-    STATS += f"**BOT Uptime: {uptime}**"
-    await message.reply_text(STATS)
+
+    # Build channel stats — name + count per channel
+    channel_lines = []
+    for ch_id in channel_list:
+        try:
+            chat = await client.get_chat(ch_id)
+            ch_name = chat.title or str(ch_id)
+        except Exception:
+            ch_name = str(ch_id)
+        count = await mdb.async_video_collection.count_documents({"source_channel_id": ch_id})
+        channel_lines.append(f"  • **{ch_name}**: `{count}` files")
+
+    channel_block = "\n".join(channel_lines) if channel_lines else "  _No channels configured_"
+
+    STATS  = ">**📊 Bot Statistics**\n\n"
+    STATS += f"**👥 Total Users:** `{len(total_users)}`\n"
+    STATS += f"**👑 Premium Users:** `{len(premium_users)}`\n"
+    STATS += f"**🗂 Total Files in DB:** `{total_files}`\n"
+    STATS += f"**⏱ Bot Uptime:** `{uptime}`\n"
+    STATS += f"\n**📡 Channel Breakdown:**\n{channel_block}"
+
+    await loading.edit_text(STATS)
 
 
 @Client.on_message(filters.command("broadcast") & filters.private)
