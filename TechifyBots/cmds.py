@@ -322,23 +322,42 @@ async def _send_file(client, cid: int, file_id: str, media_type: str,
                      edit_message=None):
     """
     Send or edit a file of any media type.
-    If edit_message is provided, tries to edit it; otherwise sends fresh.
+    If edit_message is provided, always tries to edit it in-place using
+    edit_message_media (works across ALL types — video→photo, photo→video etc).
+    Falls back to delete+send only if edit fails.
     Returns the sent/edited message.
     """
+    from pyrogram.types import (
+        InputMediaVideo, InputMediaPhoto, InputMediaDocument,
+        InputMediaAudio, InputMediaAnimation,
+    )
     markup = InlineKeyboardMarkup(buttons)
 
-    # Try editing if we have a message and it's the same type
+    def _make_input_media(fid, mtype, cap):
+        if mtype == "video":
+            return InputMediaVideo(media=fid, caption=cap)
+        elif mtype == "photo":
+            return InputMediaPhoto(media=fid, caption=cap)
+        elif mtype == "document":
+            return InputMediaDocument(media=fid, caption=cap)
+        elif mtype == "audio":
+            return InputMediaAudio(media=fid, caption=cap)
+        elif mtype == "animation":
+            return InputMediaAnimation(media=fid, caption=cap)
+        else:
+            return InputMediaDocument(media=fid, caption=cap)
+
     if edit_message:
         try:
-            if media_type == "video" and edit_message.video:
-                await edit_message.edit_media(
-                    InputMediaVideo(media=file_id, caption=caption),
-                    reply_markup=markup
-                )
-                return edit_message
+            edited = await edit_message.edit_media(
+                _make_input_media(file_id, media_type, caption),
+                reply_markup=markup,
+            )
+            # edit_media returns the updated message; fall back to edit_message if None
+            return edited if edited is not None else edit_message
         except Exception:
             pass
-        # Can't edit → delete old message and send fresh
+        # edit failed → delete and resend fresh
         try:
             await edit_message.delete()
         except Exception:
@@ -354,12 +373,11 @@ async def _send_file(client, cid: int, file_id: str, media_type: str,
         return await client.send_document(cid, file_id, **kwargs)
     elif media_type == "audio":
         return await client.send_audio(cid, file_id, **kwargs)
-    elif media_type in ("voice",):
+    elif media_type == "voice":
         return await client.send_voice(cid, file_id, **kwargs)
     elif media_type == "animation":
         return await client.send_animation(cid, file_id, **kwargs)
     else:
-        # fallback
         return await client.send_document(cid, file_id, **kwargs)
 
 
@@ -424,23 +442,32 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
                 [InlineKeyboardButton("📂 Change Category", callback_data="show_category")],
                 [InlineKeyboardButton("🌐 Switch to All", callback_data="cat_all")],
             ])
+        no_files_text = (
+            f"📭 <b>No files found in category: {cat_name}</b>\n\n"
+            f"<i>Try switching to a different category.</i>"
+        )
+        msg_has_media = any([
+            getattr(message, "video", None),
+            getattr(message, "photo", None),
+            getattr(message, "document", None),
+            getattr(message, "audio", None),
+            getattr(message, "voice", None),
+            getattr(message, "animation", None),
+        ])
         if delete_prev_msg:
             try:
                 await message.delete()
             except Exception:
                 pass
-            await client.send_message(
-                cid,
-                f"📭 <b>No files found in category: {cat_name}</b>\n\n"
-                f"<i>Try switching to a different category.</i>",
-                reply_markup=no_file_markup
-            )
+            await client.send_message(cid, no_files_text, reply_markup=no_file_markup)
+        elif msg_has_media:
+            # Edit caption on the existing media message — no new message sent
+            try:
+                await message.edit_caption(no_files_text, reply_markup=no_file_markup)
+            except Exception:
+                await client.send_message(cid, no_files_text, reply_markup=no_file_markup)
         else:
-            await message.reply_text(
-                f"📭 <b>No files found in category: {cat_name}</b>\n\n"
-                f"<i>Try switching to a different category.</i>",
-                reply_markup=no_file_markup
-            )
+            await message.reply_text(no_files_text, reply_markup=no_file_markup)
         return
 
     recent = USER_RECENT_VIDEOS.get(uid, set())
@@ -480,8 +507,17 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
     # Decide whether to edit existing message or delete+send fresh
     edit_msg = None
     if not delete_prev_msg:
-        # Only try to edit if it's the same media type
-        if media_type == "video" and getattr(message, "video", None):
+        # Always try to edit the existing message in-place (works for all media types)
+        # edit_message_media handles video→photo, photo→video transitions too
+        msg_has_media = any([
+            getattr(message, "video", None),
+            getattr(message, "photo", None),
+            getattr(message, "document", None),
+            getattr(message, "audio", None),
+            getattr(message, "voice", None),
+            getattr(message, "animation", None),
+        ])
+        if msg_has_media:
             edit_msg = message
 
     if delete_prev_msg:
@@ -542,8 +578,15 @@ async def auto_delete(client, cid, mid, uid):
         await asyncio.sleep(DELETE_TIMER)
         try:
             msg = await client.get_messages(cid, mid)
-            if msg and msg.video:
-                asyncio.create_task(mdb.clear_watch_history_for_file(msg.video.file_id))
+            if msg:
+                fid = None
+                if msg.video:        fid = msg.video.file_id
+                elif msg.photo:      fid = msg.photo.file_id
+                elif msg.document:   fid = msg.document.file_id
+                elif msg.audio:      fid = msg.audio.file_id
+                elif msg.animation:  fid = msg.animation.file_id
+                if fid:
+                    asyncio.create_task(mdb.clear_watch_history_for_file(fid))
         except Exception:
             pass
         try:
