@@ -108,16 +108,12 @@ def _prog_kb() -> InlineKeyboardMarkup:
 
 
 def _nav_kb(idx: int, total: int) -> InlineKeyboardMarkup:
-    row: list[InlineKeyboardButton] = []
-    # Always show ⏮️ — jumps to first if not already there
-    row.append(InlineKeyboardButton("⏮️", callback_data="lg_first"))
-    if idx > 0:
-        row.append(InlineKeyboardButton("⬅️", callback_data="lg_prev"))
-    row.append(InlineKeyboardButton(f"{idx + 1}/{total}", callback_data="lg_noop"))
-    if idx < total - 1:
-        row.append(InlineKeyboardButton("➡️", callback_data="lg_next"))
-    # Always show ⏭️ — jumps to last if not already there
-    row.append(InlineKeyboardButton("⏭️", callback_data="lg_last"))
+    # ⬅️ and ➡️ always shown — they wrap around (first↔last)
+    row: list[InlineKeyboardButton] = [
+        InlineKeyboardButton("⬅️", callback_data="lg_prev"),
+        InlineKeyboardButton(f"{idx + 1}/{total}", callback_data="lg_noop"),
+        InlineKeyboardButton("➡️", callback_data="lg_next"),
+    ]
     return InlineKeyboardMarkup([
         row,
         [
@@ -640,30 +636,19 @@ async def handle_lg_callback(client: Client, query, data: str):
 
     if data == "lg_prev":
         await query.answer()
-        if s["ss_index"] > 0:
-            s["ss_index"] -= 1
+        total = len(s["ss_paths"])
+        if total:
+            # Wrap: at first SS → jump to last
+            s["ss_index"] = (s["ss_index"] - 1) % total
             await _show_nav(client, uid)
         return
 
     if data == "lg_next":
         await query.answer()
-        if s["ss_index"] < len(s["ss_paths"]) - 1:
-            s["ss_index"] += 1
-            await _show_nav(client, uid)
-        return
-
-    if data == "lg_first":
-        await query.answer()
-        if s["ss_index"] != 0:
-            s["ss_index"] = 0
-            await _show_nav(client, uid)
-        return
-
-    if data == "lg_last":
-        await query.answer()
-        last = len(s["ss_paths"]) - 1
-        if s["ss_index"] != last:
-            s["ss_index"] = last
+        total = len(s["ss_paths"])
+        if total:
+            # Wrap: at last SS → jump to first
+            s["ss_index"] = (s["ss_index"] + 1) % total
             await _show_nav(client, uid)
         return
 
@@ -764,20 +749,68 @@ async def receive_custom(client: Client, message: Message):
 
 
 # ── handle_link_access (called from cmds.py on ?start=link_<id>) ─────────────
-# Changes:
-#   • "Get More Videos" button appended below the LAST sent file
-#   • All sent messages are deleted after DELETE_TIMER seconds
 
 async def handle_link_access(client: Client, message: Message, link_id: str):
-    from vars import IS_FSUB, PROTECT_CONTENT
+    from vars import IS_FSUB, IS_VERIFY, PROTECT_CONTENT, PREMIUM_CAN_DOWNLOAD
     from .fsub import get_fsub
+    from Database.userdb import udb
+    from .cmds import (
+        get_cached_user_data, get_cached_verification,
+        _make_file_buttons, show_verify, USER_CURRENT_VIDEO,
+        USER_ACTIVE_VIDEOS, auto_delete, clear_user_cache,
+    )
 
-    if IS_FSUB and not await get_fsub(client, message):
+    uid = message.from_user.id
+    cid = message.chat.id
+
+    # ── Animated checking placeholder ────────────────────────────────────
+    anim_frames = ["!", "!!", "!!!", "?", "??", "???"]
+    anim_msg = await message.reply_text(anim_frames[0])
+    async def _animate(stop_event: asyncio.Event):
+        i = 1
+        while not stop_event.is_set():
+            try:
+                await anim_msg.edit_text(anim_frames[i % len(anim_frames)])
+            except Exception:
+                pass
+            i += 1
+            await asyncio.sleep(0.4)
+    stop_anim = asyncio.Event()
+    anim_task = asyncio.create_task(_animate(stop_anim))
+
+    async def _stop_and_edit(text: str, markup=None):
+        stop_anim.set()
+        anim_task.cancel()
+        try:
+            await anim_msg.edit_text(text, reply_markup=markup)
+        except Exception:
+            pass
+
+    # ── Ban check ─────────────────────────────────────────────────────────
+    if await udb.is_user_banned(uid):
+        await _stop_and_edit("**🚫 You are banned from using this bot**")
         return
 
+    # ── Force-sub check ───────────────────────────────────────────────────
+    if IS_FSUB and not await get_fsub(client, message):
+        stop_anim.set()
+        anim_task.cancel()
+        try:
+            await anim_msg.delete()
+        except Exception:
+            pass
+        return
+
+    # ── Maintenance check ─────────────────────────────────────────────────
+    limits = await mdb.get_global_limits()
+    if limits.get("maintenance"):
+        await _stop_and_edit("**🛠️ Bot Under Maintenance — Back Soon!**")
+        return
+
+    # ── Fetch link document ───────────────────────────────────────────────
     doc = await mdb.async_db["file_links"].find_one({"link_id": link_id})
     if not doc:
-        await message.reply_text("❌ This link is invalid or has expired.")
+        await _stop_and_edit("❌ This link is invalid or has expired.")
         return
 
     files = []
@@ -790,45 +823,108 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
             files.append({"file_id": fid, "media_type": mtype})
 
     if not files:
-        await message.reply_text("❌ No files found for this link.")
+        await _stop_and_edit("❌ No files found for this link.")
         return
 
-    cid          = message.chat.id
+    # ── Usage / limit / verification check (same as send_video) ──────────
+    user     = await get_cached_user_data(uid)
+    is_prime = user.get("plan") == "prime"
+    usage_text = ""
+
+    if is_prime:
+        usage_text = "🌟 User Plan : Prime"
+        protect = False if PREMIUM_CAN_DOWNLOAD else PROTECT_CONTENT
+    else:
+        protect = PROTECT_CONTENT
+        if IS_VERIFY:
+            verified, is_second, is_third = await get_cached_verification(uid)
+            if verified and not is_second and not is_third:
+                usage_text = "**Status : ✅ Verified**"
+            else:
+                usage = await mdb.check_and_increment_usage(uid)
+                if usage["allowed"]:
+                    usage_text = f"📊 Daily Limit : {usage['count']}/{usage['limit']}"
+                else:
+                    stop_anim.set()
+                    anim_task.cancel()
+                    try:
+                        await anim_msg.delete()
+                    except Exception:
+                        pass
+                    await show_verify(client, message, uid, is_second, is_third)
+                    return
+        else:
+            usage = await mdb.check_and_increment_usage(uid)
+            if not usage["allowed"]:
+                await _stop_and_edit(
+                    f"**🚫 Daily limit reached ({usage['limit']})\n\nUpgrade to Prime!**"
+                )
+                return
+            usage_text = f"📊 Daily Limit : {usage['count']}/{usage['limit']}"
+
+    # Animation done — delete it before sending files
+    stop_anim.set()
+    anim_task.cancel()
+    try:
+        await anim_msg.delete()
+    except Exception:
+        pass
+
+    # ── Send files ────────────────────────────────────────────────────────
+    mins = DELETE_TIMER // 60
     sent_msg_ids = []
+    last_idx = len(files) - 1
 
     for idx, f in enumerate(files):
         fid, mtype = f["file_id"], f["media_type"]
-        is_last    = (idx == len(files) - 1)
+        is_last    = (idx == last_idx)
 
-        # Add "Get More Videos" button only on the last file
-        markup = None
         if is_last:
-            markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎬 Get More Videos", callback_data="getvideo")]
-            ])
+            # Last file gets full caption + navigation buttons (same as send_video)
+            # Check watch history for Back button
+            history      = await mdb.get_watch_history(uid, limit=2)
+            has_previous = len(history) > 0
+            caption  = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}</b>"
+            buttons  = _make_file_buttons(uid, has_previous)
+            markup   = InlineKeyboardMarkup(buttons)
+            USER_CURRENT_VIDEO[uid] = fid
+        else:
+            caption = None
+            markup  = None
 
         try:
+            kwargs = dict(protect_content=protect, reply_markup=markup)
+            if caption:
+                kwargs["caption"] = caption
             if   mtype == "video":
-                sent = await client.send_video(cid, fid, protect_content=PROTECT_CONTENT, reply_markup=markup)
+                sent = await client.send_video(cid, fid, **kwargs)
             elif mtype == "photo":
-                sent = await client.send_photo(cid, fid, protect_content=PROTECT_CONTENT, reply_markup=markup)
+                sent = await client.send_photo(cid, fid, **kwargs)
             elif mtype == "audio":
-                sent = await client.send_audio(cid, fid, protect_content=PROTECT_CONTENT, reply_markup=markup)
+                sent = await client.send_audio(cid, fid, **kwargs)
             elif mtype == "voice":
-                sent = await client.send_voice(cid, fid, protect_content=PROTECT_CONTENT, reply_markup=markup)
+                sent = await client.send_voice(cid, fid, **kwargs)
             elif mtype == "animation":
-                sent = await client.send_animation(cid, fid, protect_content=PROTECT_CONTENT, reply_markup=markup)
+                sent = await client.send_animation(cid, fid, **kwargs)
             else:
-                sent = await client.send_document(cid, fid, protect_content=PROTECT_CONTENT, reply_markup=markup)
+                sent = await client.send_document(cid, fid, **kwargs)
 
             sent_msg_ids.append(sent.id)
+
+            if is_last:
+                # Track exactly like send_video does
+                asyncio.create_task(mdb.add_to_watch_history(uid, fid, mtype))
+                USER_ACTIVE_VIDEOS.setdefault(uid, set()).add(sent.id)
+                asyncio.create_task(auto_delete(client, cid, sent.id, uid))
+
         except Exception as e:
             print(f"[handle_link_access] {mtype}: {e}")
         await asyncio.sleep(0.3)
 
-    # Schedule deletion of all sent files after DELETE_TIMER seconds
-    if sent_msg_ids:
-        asyncio.create_task(_delete_link_files(client, cid, sent_msg_ids))
+    # Schedule deletion of ALL sent files after DELETE_TIMER seconds
+    # (auto_delete handles the last file; delete the earlier ones manually)
+    if len(sent_msg_ids) > 1:
+        asyncio.create_task(_delete_link_files(client, cid, sent_msg_ids[:-1]))
 
 
 async def _delete_link_files(client: Client, cid: int, msg_ids: list[int]):
