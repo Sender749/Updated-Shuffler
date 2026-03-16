@@ -295,6 +295,28 @@ async def category_command(client, message):
         )
 
 
+# ==================== ANIMATION HELPER ====================
+
+_ANIM_FRAMES = ["!", "!!", "!!!", "?", "??", "???"]
+
+async def _run_check_animation(placeholder_msg) -> asyncio.Event:
+    """Start the ! !! !!! ? ?? ??? animation on placeholder_msg. Returns stop_event."""
+    stop_event = asyncio.Event()
+
+    async def _loop():
+        i = 1
+        while not stop_event.is_set():
+            try:
+                await placeholder_msg.edit_text(_ANIM_FRAMES[i % len(_ANIM_FRAMES)])
+            except Exception:
+                pass
+            i += 1
+            await asyncio.sleep(0.4)
+
+    asyncio.create_task(_loop())
+    return stop_event
+
+
 # ==================== VIDEO SENDING ====================
 
 @Client.on_message(filters.command("getvideos") & filters.private)
@@ -385,10 +407,75 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
     """
     Main file-sending function.
     delete_prev_msg=True: delete `message` before sending (used after category select).
+    Shows animated placeholder (! !! !!! ? ?? ???) while running checks, then
+    edits that placeholder into the final file — so everything stays in one message.
     """
     uid = uid or message.from_user.id
     cid = message.chat.id
 
+    # ── Determine if we can edit the triggering message or need a fresh placeholder ──
+    msg_has_media = any([
+        getattr(message, "video", None),
+        getattr(message, "photo", None),
+        getattr(message, "document", None),
+        getattr(message, "audio", None),
+        getattr(message, "voice", None),
+        getattr(message, "animation", None),
+    ])
+
+    if delete_prev_msg:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        placeholder = await client.send_message(cid, _ANIM_FRAMES[0])
+    elif msg_has_media:
+        # Edit the caption on the existing media msg during checks
+        try:
+            await message.edit_caption(_ANIM_FRAMES[0])
+        except Exception:
+            pass
+        placeholder = message  # will use edit_media later
+    else:
+        # Plain text message (e.g. /getvideos cmd) — edit it
+        try:
+            await message.edit_text(_ANIM_FRAMES[0])
+            placeholder = message
+        except Exception:
+            placeholder = await client.send_message(cid, _ANIM_FRAMES[0])
+
+    # Start animation
+    stop_anim = asyncio.Event()
+    async def _anim_loop():
+        i = 1
+        while not stop_anim.is_set():
+            try:
+                if msg_has_media and placeholder is message and not delete_prev_msg:
+                    await placeholder.edit_caption(_ANIM_FRAMES[i % len(_ANIM_FRAMES)])
+                else:
+                    await placeholder.edit_text(_ANIM_FRAMES[i % len(_ANIM_FRAMES)])
+            except Exception:
+                pass
+            i += 1
+            await asyncio.sleep(0.4)
+    anim_task = asyncio.create_task(_anim_loop())
+
+    async def _fail(text: str, markup=None):
+        """Stop animation and show error/info in the placeholder."""
+        stop_anim.set()
+        anim_task.cancel()
+        try:
+            if msg_has_media and placeholder is message and not delete_prev_msg:
+                await placeholder.edit_caption(text, reply_markup=markup)
+            else:
+                await placeholder.edit_text(text, reply_markup=markup)
+        except Exception:
+            try:
+                await client.send_message(cid, text, reply_markup=markup)
+            except Exception:
+                pass
+
+    # ── Checks ────────────────────────────────────────────────────────────
     banned, limits, user = await asyncio.gather(
         udb.is_user_banned(uid),
         mdb.get_global_limits(),
@@ -396,14 +483,27 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
     )
 
     if banned:
-        await message.reply("**🚫 You are banned from using this bot**")
+        await _fail("**🚫 You are banned from using this bot**")
         return
 
     if limits.get("maintenance"):
-        await message.reply_text("**🛠️ Bot Under Maintenance — Back Soon!**")
+        await _fail("**🛠️ Bot Under Maintenance — Back Soon!**")
         return
 
     if IS_FSUB and not await get_fsub(client, message, user_id=uid):
+        stop_anim.set()
+        anim_task.cancel()
+        # fsub handler sends its own message; just clean up placeholder
+        if placeholder is not message:
+            try:
+                await placeholder.delete()
+            except Exception:
+                pass
+        elif msg_has_media:
+            try:
+                await placeholder.edit_caption("")
+            except Exception:
+                pass
         return
 
     is_prime = user.get("plan") == "prime"
@@ -420,12 +520,20 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
                 if usage["allowed"]:
                     usage_text = f"📊 Daily Limit : {usage['count']}/{usage['limit']}"
                 else:
+                    stop_anim.set()
+                    anim_task.cancel()
+                    # Delete placeholder then show verify prompt
+                    if placeholder is not message:
+                        try:
+                            await placeholder.delete()
+                        except Exception:
+                            pass
                     await show_verify(client, message, uid, is_second, is_third)
                     return
         else:
             usage = await mdb.check_and_increment_usage(uid)
             if not usage["allowed"]:
-                await message.reply_text(f"**🚫 Limit reached ({usage['limit']})\n\nUpgrade to Prime!**")
+                await _fail(f"**🚫 Limit reached ({usage['limit']})\n\nUpgrade to Prime!**")
                 return
             usage_text = f"📊 Daily Limit : {usage['count']}/{usage['limit']}"
 
@@ -434,7 +542,6 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
     videos = await _get_videos_for_category(user_category)
 
     if not videos:
-        # Strictly no files in that category — do NOT fallback
         cat_name = "All" if user_category == "all" else user_category
         no_file_markup = None
         if is_prime and user_category != "all":
@@ -446,31 +553,10 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
             f"📭 <b>No files found in category: {cat_name}</b>\n\n"
             f"<i>Try switching to a different category.</i>"
         )
-        msg_has_media = any([
-            getattr(message, "video", None),
-            getattr(message, "photo", None),
-            getattr(message, "document", None),
-            getattr(message, "audio", None),
-            getattr(message, "voice", None),
-            getattr(message, "animation", None),
-        ])
-        if delete_prev_msg:
-            try:
-                await message.delete()
-            except Exception:
-                pass
-            await client.send_message(cid, no_files_text, reply_markup=no_file_markup)
-        elif msg_has_media:
-            # Edit caption on the existing media message — no new message sent
-            try:
-                await message.edit_caption(no_files_text, reply_markup=no_file_markup)
-            except Exception:
-                await client.send_message(cid, no_files_text, reply_markup=no_file_markup)
-        else:
-            await message.reply_text(no_files_text, reply_markup=no_file_markup)
+        await _fail(no_files_text, no_file_markup)
         return
 
-    recent = USER_RECENT_VIDEOS.get(uid, set())
+    recent    = USER_RECENT_VIDEOS.get(uid, set())
     available = [v for v in videos if v["video_id"] not in recent]
     if not available:
         USER_RECENT_VIDEOS[uid] = set()
@@ -481,55 +567,38 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
     if len(USER_RECENT_VIDEOS[uid]) > 20:
         USER_RECENT_VIDEOS[uid] = set()
 
-    file_id = item["file_id"]
+    file_id    = item["file_id"]
     media_type = item.get("media_type", "video")
-    mins = DELETE_TIMER // 60
+    mins       = DELETE_TIMER // 60
 
-    # Category line in caption (premium only)
     cat_display = ""
     if is_prime:
-        cat_name = "All" if user_category == "all" else user_category
+        cat_name    = "All" if user_category == "all" else user_category
         cat_display = f"\n📂 Category: {cat_name}"
 
     caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}{cat_display}</b>"
     USER_CURRENT_VIDEO[uid] = file_id
 
-    history = await mdb.get_watch_history(uid, limit=2)
+    history      = await mdb.get_watch_history(uid, limit=2)
     has_previous = len(history) > 0
 
-    # protect_content — off for premium users if PREMIUM_CAN_DOWNLOAD is enabled
     protect = PROTECT_CONTENT
     if is_prime and PREMIUM_CAN_DOWNLOAD:
         protect = False
 
     buttons = _make_file_buttons(uid, has_previous)
 
-    # Decide whether to edit existing message or delete+send fresh
-    edit_msg = None
-    if not delete_prev_msg:
-        # Always try to edit the existing message in-place (works for all media types)
-        # edit_message_media handles video→photo, photo→video transitions too
-        msg_has_media = any([
-            getattr(message, "video", None),
-            getattr(message, "photo", None),
-            getattr(message, "document", None),
-            getattr(message, "audio", None),
-            getattr(message, "voice", None),
-            getattr(message, "animation", None),
-        ])
-        if msg_has_media:
-            edit_msg = message
+    # ── Stop animation and send/edit the file ─────────────────────────────
+    stop_anim.set()
+    anim_task.cancel()
 
-    if delete_prev_msg:
-        try:
-            await message.delete()
-        except Exception:
-            pass
+    # Always try to edit placeholder into the file
+    edit_target = placeholder  # could be the media msg itself or a fresh text msg
 
     try:
         sent = await _send_file(
             client, cid, file_id, media_type, caption, protect, buttons,
-            edit_message=edit_msg
+            edit_message=edit_target,
         )
         asyncio.create_task(mdb.add_to_watch_history(uid, file_id, media_type))
         USER_ACTIVE_VIDEOS.setdefault(uid, set()).add(sent.id)
