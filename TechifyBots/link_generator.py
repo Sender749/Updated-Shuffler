@@ -109,11 +109,15 @@ def _prog_kb() -> InlineKeyboardMarkup:
 
 def _nav_kb(idx: int, total: int) -> InlineKeyboardMarkup:
     row: list[InlineKeyboardButton] = []
+    # Always show ⏮️ — jumps to first if not already there
+    row.append(InlineKeyboardButton("⏮️", callback_data="lg_first"))
     if idx > 0:
         row.append(InlineKeyboardButton("⬅️", callback_data="lg_prev"))
     row.append(InlineKeyboardButton(f"{idx + 1}/{total}", callback_data="lg_noop"))
     if idx < total - 1:
         row.append(InlineKeyboardButton("➡️", callback_data="lg_next"))
+    # Always show ⏭️ — jumps to last if not already there
+    row.append(InlineKeyboardButton("⏭️", callback_data="lg_last"))
     return InlineKeyboardMarkup([
         row,
         [
@@ -446,21 +450,40 @@ async def _show_nav(client: Client, uid: int):
     caption = f"🖼 **Screenshot  {idx + 1} / {total}**"
     markup  = _nav_kb(idx, total)
 
+    # Use cached Telegram file_id if available (avoids re-uploading = much faster)
+    ss_cache: dict = s.setdefault("ss_file_id_cache", {})
+    cached_fid = ss_cache.get(path)
+
     try:
-        await client.edit_message_media(
-            chat_id, nav_id,
-            InputMediaPhoto(media=path, caption=caption),
-            reply_markup=markup,
-        )
-    except Exception:
-        await _del(client, chat_id, nav_id)
-        try:
-            new = await client.send_photo(
-                chat_id, path, caption=caption, reply_markup=markup,
+        if cached_fid:
+            # Fast path: edit using cached file_id (no upload needed)
+            await client.edit_message_media(
+                chat_id, nav_id,
+                InputMediaPhoto(media=cached_fid, caption=caption),
+                reply_markup=markup,
             )
-            s["nav_msg_id"] = new.id
-        except Exception as e:
-            print(f"[lg] nav: {e}")
+        else:
+            # First time showing this SS: upload from disk
+            try:
+                new_msg = await client.edit_message_media(
+                    chat_id, nav_id,
+                    InputMediaPhoto(media=path, caption=caption),
+                    reply_markup=markup,
+                )
+                # Cache the returned file_id for instant future navigation
+                if new_msg and new_msg.photo:
+                    ss_cache[path] = new_msg.photo.file_id
+            except Exception:
+                # edit_message_media failed — delete and resend fresh
+                await _del(client, chat_id, nav_id)
+                new = await client.send_photo(
+                    chat_id, path, caption=caption, reply_markup=markup,
+                )
+                s["nav_msg_id"] = new.id
+                if new.photo:
+                    ss_cache[path] = new.photo.file_id
+    except Exception as e:
+        print(f"[lg] nav: {e}")
 
 
 # ── More SS ───────────────────────────────────────────────────────────────────
@@ -507,23 +530,31 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
     bot_me  = await client.get_me()
     tg_link = f"https://t.me/{bot_me.username}?start=link_{link_id}"
 
-    caption = f">🆔 : `{post_id}`"
+    caption = f">🆔 Post ID : `{post_id}`"
 
     get_btn = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎬 Get File", url=tg_link)]
+        [InlineKeyboardButton("🎬 Get Video", url=tg_link)]
     ])
 
     # ── Choose preview media ──────────────────────────────────────────────
     if custom:
         pfid, pmtype = custom["file_id"], custom["media_type"]
         use_path = None
+    elif s["ss_paths"]:
+        # ALWAYS prefer the selected screenshot as the post thumbnail (photo)
+        # regardless of whether the source file was video or anything else
+        ss_cache: dict = s.get("ss_file_id_cache", {})
+        current_path = s["ss_paths"][s["ss_index"]]
+        cached_fid = ss_cache.get(current_path)
+        if cached_fid:
+            use_path = None
+            pfid, pmtype = cached_fid, "photo"
+        else:
+            use_path = current_path
+            pfid, pmtype = None, "photo"
     elif single:
         pfid, pmtype = files[0]["file_id"], files[0]["media_type"]
         use_path = None
-    elif s["ss_paths"]:
-        # Use on-disk path directly — no prior DM upload needed
-        use_path = s["ss_paths"][s["ss_index"]]
-        pfid, pmtype = None, "photo"
     else:
         pfid, pmtype = files[0]["file_id"], files[0]["media_type"]
         use_path = None
@@ -618,6 +649,21 @@ async def handle_lg_callback(client: Client, query, data: str):
         await query.answer()
         if s["ss_index"] < len(s["ss_paths"]) - 1:
             s["ss_index"] += 1
+            await _show_nav(client, uid)
+        return
+
+    if data == "lg_first":
+        await query.answer()
+        if s["ss_index"] != 0:
+            s["ss_index"] = 0
+            await _show_nav(client, uid)
+        return
+
+    if data == "lg_last":
+        await query.answer()
+        last = len(s["ss_paths"]) - 1
+        if s["ss_index"] != last:
+            s["ss_index"] = last
             await _show_nav(client, uid)
         return
 
