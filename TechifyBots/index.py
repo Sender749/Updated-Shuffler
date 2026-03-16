@@ -17,6 +17,31 @@ def _admin_list():
 CHANNEL_LIST = DATABASE_CHANNEL_ID if isinstance(DATABASE_CHANNEL_ID, list) else [DATABASE_CHANNEL_ID]
 
 
+# ==================== DB MIGRATION: fix old null channel_id docs ====================
+
+@Client.on_message(filters.command("fix_index") & filters.private)
+async def fix_index_nulls(client: Client, message: Message):
+    """One-time migration: assign source_channel_id to old docs that have channel_id=null."""
+    if message.from_user.id not in _admin_list():
+        await message.reply_text("**🚫 Not authorized.**")
+        return
+
+    msg = await message.reply_text("🔧 Scanning for old docs with `channel_id: null`...")
+    count = await mdb.async_video_collection.count_documents({"channel_id": None})
+    if count == 0:
+        await msg.edit_text("✅ No old null-channel docs found. DB is clean!")
+        return
+
+    await msg.edit_text(
+        f"⚠️ Found **{count}** old docs with `channel_id: null`.\n\n"
+        f"These were indexed before multi-channel support was added.\n"
+        f"Use `/reindex` to re-index your channels from scratch, or "
+        f"send the channel ID to assign them to:\n\n"
+        f"Reply with a channel ID (e.g. `-1001234567890`) to bulk-assign, "
+        f"or `/skip_fix` to leave them as-is (they won't appear in category filters)."
+    )
+
+
 # ==================== SAVE MEDIA ====================
 
 def _extract_media(msg: Message):
@@ -46,19 +71,16 @@ async def save_media(msg: Message, source_channel_id: int = None) -> bool:
     """
     Save any media type to the DB. Returns True if newly saved, False if duplicate/no-media.
     Always stores source_channel_id so category filtering works.
+
+    FIX: Old DB had a unique index on (video_id, channel_id) with channel_id=null for legacy docs.
+    We now use update_one with upsert keyed on (video_id, source_channel_id) to avoid E11000 errors,
+    and also store 'channel_id' field = source_channel_id so the old index is satisfied.
     """
     media, media_type, duration = _extract_media(msg)
     if not media:
         return False
 
-    # Deduplicate by (video_id = message_id, source_channel_id)
     channel_id = source_channel_id or (msg.chat.id if msg.chat else None)
-    existing = await mdb.async_video_collection.find_one({
-        "video_id": msg.id,
-        "source_channel_id": channel_id
-    })
-    if existing:
-        return False
 
     doc = {
         "video_id": msg.id,
@@ -66,10 +88,37 @@ async def save_media(msg: Message, source_channel_id: int = None) -> bool:
         "media_type": media_type,
         "duration": duration,
         "source_channel_id": channel_id,
+        "channel_id": channel_id,   # kept for old index compatibility
         "added_at": datetime.now(),
     }
-    await mdb.async_video_collection.insert_one(doc)
-    return True
+
+    try:
+        result = await mdb.async_video_collection.update_one(
+            {"video_id": msg.id, "source_channel_id": channel_id},
+            {"$setOnInsert": doc},
+            upsert=True,
+        )
+        return result.upserted_id is not None  # True = newly inserted
+    except Exception as e:
+        err_str = str(e)
+        # If it's a dup key on the OLD (video_id, channel_id) index,
+        # update that old doc to add source_channel_id and correct fields
+        if "11000" in err_str:
+            try:
+                await mdb.async_video_collection.update_one(
+                    {"video_id": msg.id, "channel_id": None},
+                    {"$set": {
+                        "source_channel_id": channel_id,
+                        "channel_id": channel_id,
+                        "file_id": media.file_id,
+                        "media_type": media_type,
+                    }}
+                )
+                return False  # already existed (migrated)
+            except Exception:
+                pass
+        print(f"[save_media] error: {e}")
+        return False
 
 
 # ==================== AUTO INDEX (MULTI-CHANNEL) ====================
