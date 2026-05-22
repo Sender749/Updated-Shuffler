@@ -1,5 +1,5 @@
 from pyrogram import Client, filters
-from vars import ADMIN_IDS, ADMIN_USERNAME, IS_FSUB
+from vars import ADMIN_IDS, ADMIN_USERNAME, IS_FSUB, PREMIUM_CAN_DOWNLOAD
 from pyrogram.types import *
 from Database.userdb import udb
 from .fsub import get_fsub
@@ -15,7 +15,10 @@ def is_admin(user_id: int) -> bool:
 @Client.on_message(filters.command("myplan") & filters.private)
 async def my_plan(client, message):
     if await udb.is_user_banned(message.from_user.id):
-        await message.reply("**🚫 You are banned from using this bot**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support 🧑‍💻", url=f"https://t.me/{ADMIN_USERNAME}")]]))
+        await message.reply(
+            "**🚫 You are banned from using this bot**",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support 🧑‍💻", url=f"https://t.me/{ADMIN_USERNAME}")]])
+        )
         return
     if IS_FSUB and not await get_fsub(client, message):
         return
@@ -27,6 +30,7 @@ async def my_plan(client, message):
     plan = user.get("plan", "free")
     daily_count = user.get("daily_count", 0)
     prime_expiry = user.get("prime_expiry")
+
     status_text = f""">**Plan Details**
 
 **User:** {message.from_user.mention}
@@ -38,17 +42,38 @@ async def my_plan(client, message):
 **Daily Limit:** {FREE_LIMIT}
 **Today Used:** {daily_count}/{FREE_LIMIT}
 **Remaining:** {max(FREE_LIMIT - daily_count, 0)}
+
+💡 Upgrade to Premium for unlimited access!
 """
+
     if plan == "prime" and prime_expiry:
         IST = pytz.timezone('Asia/Kolkata')
         if prime_expiry.tzinfo is None:
             prime_expiry = IST.localize(prime_expiry)
+
+        # Build premium feature list dynamically
+        prime_features = ["🌟 **Unlimited Video Access**"]
+        if PREMIUM_CAN_DOWNLOAD:
+            prime_features.append("📥 **Download Videos Without Restriction**")
+        prime_features.append("📂 **Category Selection**")
+        prime_features.append("⚡ **Priority Access**")
+
+        features_text = "\n".join(prime_features)
         status_text += f"""
-🌟 **Unlimited Video Access**
+{features_text}
 ⏳ **Expire Time:** {prime_expiry.strftime('%I:%M %p IST')}
 📅 **Expire Date:** {prime_expiry.strftime('%d/%m/%Y')}
 """
-    await message.reply_text(status_text)
+
+    # Show "Buy Subscription" button only for free users
+    if plan == "free":
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🍿 Buy Subscription 🍾", callback_data="buy_subscription")],
+        ])
+    else:
+        markup = None
+
+    await message.reply_text(status_text, reply_markup=markup)
 
 
 @Client.on_message(filters.command("prime") & filters.private)
