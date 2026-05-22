@@ -1,30 +1,29 @@
-class text(object):
-  START = """{},
+from vars import PREMIUM_CAN_DOWNLOAD
 
-𝖳𝗁𝗂𝗌 𝖻𝗈𝗍 𝗆𝖺𝗒 𝖼𝗈𝗇𝗍𝖺𝗂𝗇 𝖼𝗈𝗇𝗍𝖾𝗇𝗍 𝗂𝗇𝗍𝖾𝗇𝖽𝖾𝖽 𝖿𝗈𝗋 𝖺𝖽𝗎𝗅𝗍𝗌 (𝟣𝟪+).
 
-𝖯𝗅𝖾𝖺𝗌𝖾 𝗉𝗋𝗈𝖼𝖾𝖾𝖽 𝖺𝗍 𝗒𝗈𝗎𝗋 𝗈𝗐𝗇 𝗋𝗂𝗌𝗄.
+def _build_pro_text(free_limit: int) -> str:
+    """
+    Build the PRO plan description dynamically.
+    The 'download without restriction' feature is only shown
+    when PREMIUM_CAN_DOWNLOAD is enabled in vars.py.
+    """
+    download_line = (
+        "» <b>Download videos without any restriction</b> (no forwarding lock).\n"
+        if PREMIUM_CAN_DOWNLOAD else ""
+    )
 
-𝖲𝗈𝗆𝖾 𝗆𝖺𝗍𝖾𝗋𝗂𝖺𝗅 𝗆𝖺𝗒 𝗂𝗇𝖼𝗅𝗎𝖽𝖾 𝖾𝗑𝗉𝗅𝗂𝖼𝗂𝗍 𝗈𝗋 𝗀𝗋𝖺𝗉𝗁𝗂𝖼 𝖼𝗈𝗇𝗍𝖾𝗇𝗍 𝗍𝗁𝖺𝗍 𝗂𝗌 𝗇𝗈𝗍 𝗌𝗎𝗂𝗍𝖺𝖻𝗅𝖾 𝖿𝗈𝗋 𝗆𝗂𝗇𝗈𝗋𝗌."""
-
-  LOG = """👁️‍🗨️ 𝘜𝘚𝘌𝘙 𝘋𝘌𝘛𝘈𝘐𝘓𝘚
-
-○ 𝘐𝘋 : <code>{}</code>
-○ 𝘋𝘊 : {}
-○ 𝘍𝘪𝘳𝘴𝘵 𝘕𝘢𝘮𝘦 : {}
-○ 𝘜𝘴𝘦𝘳𝘕𝘢𝘮𝘦 : {}
-
-𝘉𝘺 = @{}"""
-
-  ABOUT = """⚠️ This bot is for adults (18+) only. All content is publicly available on the internet. Admin does not host any files and is not responsible for user actions. Use at your own responsibility. Contact admin for any issues.\n\n If you want to remove any content from bot. contect to admin with Post Id."""
-  
-  PRO = """<b><u>🆓 𝖥𝗋𝖾𝖾 𝖯𝗅𝖺𝗇</u></b>
+    return f"""<b><u>🆓 𝖥𝗋𝖾𝖾 𝖯𝗅𝖺𝗇</u></b>
 
 » Under free plan, each day you will get free <b>{free_limit}</b> files per day.    
 » Completely free — no payment required.
 » If you want to unlock more content and enjoy a smoother experience, consider upgrading to a premium plan:
 
 <b><u>💎 𝖯𝗋𝖾𝗆𝗂𝗎𝗆 𝖯𝗅𝖺𝗇𝗌</u></b>
+
+<b>✨ Premium Benefits:</b>
+» <b>Unlimited</b> daily file access — no limits.
+{download_line}» <b>Category selection</b> — filter by your preferred content type.
+» <b>Priority access</b> — faster & smoother experience.
 
 <b>🥈 𝖲𝗂𝗅𝗏𝖾𝗋 𝖯𝗅𝖺𝗇</b>  
 » <b>1 Week</b> — 25 INR  
@@ -43,7 +42,33 @@ class text(object):
 <b>Note:</b> Once a plan is selected, it cannot be changed.  
 All payments are <b>non-refundable</b>, so please review your choice carefully before proceeding.</blockquote>"""
 
-  ADMIN_COMMANDS = """<b><u>⭐ Admin Commands</u>
+
+class text(object):
+    START = """{},
+
+𝖳𝗁𝗂𝗌 𝖻𝗈𝗍 𝗆𝖺𝗒 𝖼𝗈𝗇𝗍𝖺𝗂𝗇 𝖼𝗈𝗇𝗍𝖾𝗇𝗍 𝗂𝗇𝗍𝖾𝗇𝖽𝖾𝖽 𝖿𝗈𝗋 𝖺𝖽𝗎𝗅𝗍𝗌 (𝟣𝟪+).
+
+𝖯𝗅𝖾𝖺𝗌𝖾 𝗉𝗋𝗈𝖼𝖾𝖾𝖽 𝖺𝗍 𝗒𝗈𝗎𝗋 𝗈𝗐𝗇 𝗋𝗂𝗌𝗄.
+
+𝖲𝗈𝗆𝖾 𝗆𝖺𝗍𝖾𝗋𝗂𝖺𝗅 𝗆𝖺𝗒 𝗂𝗇𝖼𝗅𝗎𝖽𝖾 𝖾𝗑𝗉𝗅𝗂𝖼𝗂𝗍 𝗈𝗋 𝗀𝗋𝖺𝗉𝗁𝗂𝖼 𝖼𝗈𝗇𝗍𝖾𝗇𝗍 𝗍𝗁𝖺𝗍 𝗂𝗌 𝗇𝗈𝗍 𝗌𝗎𝗂𝗍𝖺𝖻𝗅𝖾 𝖿𝗈𝗋 𝗆𝗂𝗇𝗈𝗋𝗌."""
+
+    LOG = """👁️‍🗨️ 𝘜𝘚𝘌𝘙 𝘋𝘌𝘛𝘈𝘐𝘓𝘚
+
+○ 𝘐𝘋 : <code>{}</code>
+○ 𝘋𝘊 : {}
+○ 𝘍𝘪𝘳𝘴𝘵 𝘕𝘢𝘮𝘦 : {}
+○ 𝘜𝘴𝘦𝘳𝘕𝘢𝘮𝘦 : {}
+
+𝘉𝘺 = @{}"""
+
+    ABOUT = """⚠️ This bot is for adults (18+) only. All content is publicly available on the internet. Admin does not host any files and is not responsible for user actions. Use at your own responsibility. Contact admin for any issues.\n\n If you want to remove any content from bot. contect to admin with Post Id."""
+
+    # PRO text is now dynamic — use _build_pro_text(free_limit) to generate it.
+    # The {free_limit} placeholder is kept for backward-compat with any code that
+    # still does text.PRO.format(free_limit=...).  The dynamic version is preferred.
+    PRO = ""  # populated dynamically; see callback.py which calls _build_pro_text()
+
+    ADMIN_COMMANDS = """<b><u>⭐ Admin Commands</u>
                                       
 » /setlimit — Update the daily usage limit for free users.
 
@@ -71,11 +96,11 @@ All payments are <b>non-refundable</b>, so please review your choice carefully b
 
 » /stats — View detailed bot statistics.
 
-» /l — Start generating a shareable link for files.
+» /l — Start generating a shareable link for files (supports collage).
 
 » /m_link — Generate link after collecting files.</b>"""
-  
-  HELP = """<b>𝖡𝗈𝗍 𝖣𝗂𝗌𝖼𝗅𝖺𝗂𝗆𝖾𝗋 & 𝖴𝗌𝖺𝗀𝖾 𝖦𝗎𝗂𝖽𝖾:</b>
+
+    HELP = """<b>𝖡𝗈𝗍 𝖣𝗂𝗌𝖼𝗅𝖺𝗂𝗆𝖾𝗋 & 𝖴𝗌𝖺𝗀𝖾 𝖦𝗎𝗂𝖽𝖾:</b>
 
 𝖳𝗁𝗂𝗌 𝖻𝗈𝗍 𝗂𝗌 𝗌𝗉𝖾𝖼𝗂𝖺𝗅𝗅𝗒 𝖽𝖾𝗌𝗂𝗀𝗇𝖾𝖽 𝖿𝗈𝗋 𝖺𝖽𝗎𝗅𝗍 𝗎𝗌𝖾𝗋𝗌 (𝟣𝟪+) 𝖺𝗇𝖽 𝖾𝗇𝖺𝖻𝗅𝖾𝗌 𝖾𝖺𝗌𝗒 𝖺𝖼𝖼𝖾𝗌𝗌 𝗍𝗈 𝖼𝗈𝗇𝗍𝖾𝗇𝗍 𝗏𝗂𝖺 𝗌𝗂𝗆𝗉𝗅𝖾 𝖼𝗈𝗆𝗆𝖺𝗇𝖽𝗌.
 
@@ -92,8 +117,8 @@ All payments are <b>non-refundable</b>, so please review your choice carefully b
 
 <b><blockquote>𝖭𝗈𝗍𝖾: 𝖳𝗁𝗂𝗌 𝖻𝗈𝗍 𝗂𝗌 𝗌𝗍𝗋𝗂𝖼𝗍𝗅𝗒 𝗂𝗇𝗍𝖾𝗇𝖽𝖾𝖽 𝖿𝗈𝗋 𝖺𝖽𝗎𝗅𝗍𝗌 (𝟣𝟪+). 𝖴𝗌𝖾 𝗂𝗍 𝖺𝗍 𝗒𝗈𝗎𝗋 𝗈𝗐𝗇 𝗋𝗂𝗌𝗄.</blockquote></b>"""
 
-  # Verification Messages
-  VERIFICATION_TEXT = """<b>👋 ʜᴇʏ {}, {}
+    # Verification Messages
+    VERIFICATION_TEXT = """<b>👋 ʜᴇʏ {}, {}
 
 📝 ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴠᴇʀɪғɪᴇᴅ ᴛᴏᴅᴀʏ !
       
@@ -101,7 +126,7 @@ All payments are <b>non-refundable</b>, so please review your choice carefully b
 
 ⏰ ᴛʜɪs ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ ᴡɪʟʟ ʙᴇ ᴠᴀʟɪᴅ ᴜɴᴛɪʟ: {}</b>"""
 
-  SECOND_VERIFICATION_TEXT = """<b>👋 ʜᴇʏ {}, {}
+    SECOND_VERIFICATION_TEXT = """<b>👋 ʜᴇʏ {}, {}
 
 📝 ʏᴏᴜʀ ғɪʀsᴛ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ ʜᴀs ᴇxᴘɪʀᴇᴅ !
       
@@ -109,7 +134,7 @@ All payments are <b>non-refundable</b>, so please review your choice carefully b
 
 ⏰ ᴛʜɪs ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ ᴡɪʟʟ ʙᴇ ᴠᴀʟɪᴅ ᴜɴᴛɪʟ: {}</b>"""
 
-  THIRDT_VERIFICATION_TEXT = """<b>👋 ʜᴇʏ {}, {}
+    THIRDT_VERIFICATION_TEXT = """<b>👋 ʜᴇʏ {}, {}
 
 📝 ʏᴏᴜʀ sᴇᴄᴏɴᴅ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ ʜᴀs ᴇxᴘɪʀᴇᴅ !
       
@@ -117,7 +142,7 @@ All payments are <b>non-refundable</b>, so please review your choice carefully b
 
 ⏰ ᴛʜɪs ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ ᴡɪʟʟ ʙᴇ ᴠᴀʟɪᴅ ᴜɴᴛɪʟ: {}</b>"""
 
-  VERIFY_COMPLETE_TEXT = """<b>✅ ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴs {}, 
+    VERIFY_COMPLETE_TEXT = """<b>✅ ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴs {}, 
 
 ʏᴏᴜ ʜᴀᴠᴇ sᴜᴄᴄᴇssғᴜʟʟʏ ᴄᴏᴍᴘʟᴇᴛᴇᴅ ғɪʀsᴛ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ ✅
 
@@ -125,7 +150,7 @@ All payments are <b>non-refundable</b>, so please review your choice carefully b
 
 🎉 ᴇɴᴊᴏʏ ʏᴏᴜʀ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇss!</b>"""
 
-  SECOND_VERIFY_COMPLETE_TEXT = """<b>✅ ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴs {}, 
+    SECOND_VERIFY_COMPLETE_TEXT = """<b>✅ ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴs {}, 
 
 ʏᴏᴜ ʜᴀᴠᴇ sᴜᴄᴄᴇssғᴜʟʟʏ ᴄᴏᴍᴘʟᴇᴛᴇᴅ sᴇᴄᴏɴᴅ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ ✅
 
@@ -133,7 +158,7 @@ All payments are <b>non-refundable</b>, so please review your choice carefully b
 
 🎉 ᴇɴᴊᴏʏ ʏᴏᴜʀ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇss!</b>"""
 
-  THIRDT_VERIFY_COMPLETE_TEXT = """<b>✅ ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴs {}, 
+    THIRDT_VERIFY_COMPLETE_TEXT = """<b>✅ ᴄᴏɴɢʀᴀᴛᴜʟᴀᴛɪᴏɴs {}, 
 
 ʏᴏᴜ ʜᴀᴠᴇ sᴜᴄᴄᴇssғᴜʟʟʏ ᴄᴏᴍᴘʟᴇᴛᴇᴅ ᴛʜɪʀᴅ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ ✅
 
@@ -141,7 +166,7 @@ All payments are <b>non-refundable</b>, so please review your choice carefully b
 
 🎉 ᴇɴᴊᴏʏ ʏᴏᴜʀ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇss!</b>"""
 
-  VERIFIED_LOG_TEXT = """#Verified
+    VERIFIED_LOG_TEXT = """#Verified
 
 <b>User Details:
 • Name: {}
