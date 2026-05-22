@@ -10,7 +10,11 @@ from datetime import datetime
 from typing import Optional
 from pyrogram import Client, filters
 from pyrogram.errors import MessageNotModified
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto,Message
+from pyrogram.types import (
+    InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto,
+    InputMediaVideo, InputMediaDocument, InputMediaAudio, InputMediaAnimation,
+    Message,
+)
 
 from vars import ADMIN_IDS, POST_CHANNEL, DELETE_TIMER
 from Database.maindb import mdb
@@ -60,10 +64,12 @@ def _new_sess(uid: int, chat_id: int) -> dict:
     return {
         "chat_id":           chat_id,
         "state":             "collecting",
-        "files":             [],
+        "files":             [],          # list of {"file_id", "media_type", "msg_id"}
+        "collage_groups":    [],          # list of lists — each inner list = one media-group
+        "pending_group":     {},          # {media_group_id: [items...]} for debouncing
         "ask_msg_id":        None,
         "nav_msg_id":        None,
-        "ss_paths":          [],   # on-disk paths (no DM upload)
+        "ss_paths":          [],
         "ss_tmp_dir":        None,
         "ss_index":          0,
         "cancel_flag":       False,
@@ -72,6 +78,7 @@ def _new_sess(uid: int, chat_id: int) -> dict:
         "pre_custom_state":  "generating",
         "_collect_lock":     asyncio.Lock(),
         "_settle_task":      None,
+        "_group_flush_tasks": {},         # {media_group_id: asyncio.Task}
     }
 
 
@@ -84,7 +91,9 @@ def _kill(uid: int):
         t = s.get(key)
         if t and not t.done():
             t.cancel()
-    # Clean up any leftover temp directory
+    for t in s.get("_group_flush_tasks", {}).values():
+        if t and not t.done():
+            t.cancel()
     tmp = s.get("ss_tmp_dir")
     if tmp and os.path.isdir(tmp):
         shutil.rmtree(tmp, ignore_errors=True)
@@ -108,7 +117,6 @@ def _prog_kb() -> InlineKeyboardMarkup:
 
 
 def _nav_kb(idx: int, total: int) -> InlineKeyboardMarkup:
-    # ⬅️ and ➡️ always shown — they wrap around (first↔last)
     row: list[InlineKeyboardButton] = [
         InlineKeyboardButton("⬅️", callback_data="lg_prev"),
         InlineKeyboardButton(f"{idx + 1}/{total}", callback_data="lg_noop"),
@@ -135,12 +143,14 @@ def _back_kb() -> InlineKeyboardMarkup:
 
 # ── ask-text ──────────────────────────────────────────────────────────────────
 
-def _ask_text(n: int) -> str:
+def _ask_text(n: int, n_groups: int = 0) -> str:
     word = "file" if n == 1 else "files"
+    group_info = f" ({n_groups} collage group{'s' if n_groups != 1 else ''})" if n_groups > 0 else ""
     return (
         f"📁 **Link Generator**\n\n"
-        f"Files received: **{n} {word}**\n\n"
-        f"Send any file (video · photo · audio · document …)\n\n"
+        f"Files received: **{n} {word}**{group_info}\n\n"
+        f"Send any file (video · photo · audio · document …)\n"
+        f"Send multiple photos/videos together for a **collage**.\n\n"
         f"Send /m_link when done to generate screenshots & link."
     )
 
@@ -199,13 +209,60 @@ async def collect_file(client: Client, message: Message):
     if not fid:
         return
 
-    s["files"].append({"file_id": fid, "media_type": mtype, "msg_id": message.id})
+    file_entry = {"file_id": fid, "media_type": mtype, "msg_id": message.id}
 
+    media_group_id = getattr(message, "media_group_id", None)
+
+    if media_group_id:
+        # ── This message is part of a media group (collage) ──
+        group = s["pending_group"].setdefault(media_group_id, [])
+        group.append(file_entry)
+
+        # Cancel any existing flush task for this group and restart the timer
+        existing = s["_group_flush_tasks"].get(media_group_id)
+        if existing and not existing.done():
+            existing.cancel()
+        s["_group_flush_tasks"][media_group_id] = asyncio.create_task(
+            _flush_group(client, uid, media_group_id)
+        )
+    else:
+        # ── Single file (not part of a collage) ──
+        s["files"].append(file_entry)
+
+        # Cancel and restart the settle task
+        old = s.get("_settle_task")
+        if old and not old.done():
+            old.cancel()
+        s["_settle_task"] = asyncio.create_task(
+            _settle_prompt(client, uid, message.chat.id)
+        )
+
+
+async def _flush_group(client: Client, uid: int, media_group_id: str):
+    """
+    Wait a short time for all messages in the media group to arrive,
+    then commit the whole group as a single collage entry.
+    """
+    await asyncio.sleep(1.0)   # Telegram delivers group messages within ~0.5–0.8 s
+    s = LINK_SESSIONS.get(uid)
+    if not s or s["state"] != "collecting":
+        return
+
+    group_items = s["pending_group"].pop(media_group_id, [])
+    if not group_items:
+        return
+
+    # Store as collage group (preserves ordering within group)
+    s["collage_groups"].append(group_items)
+    # Also add all items to the flat file list (used for SS generation etc.)
+    s["files"].extend(group_items)
+
+    # Update the prompt
     old = s.get("_settle_task")
     if old and not old.done():
         old.cancel()
     s["_settle_task"] = asyncio.create_task(
-        _settle_prompt(client, uid, message.chat.id)
+        _settle_prompt(client, uid, s["chat_id"])
     )
 
 
@@ -216,13 +273,14 @@ async def _settle_prompt(client: Client, uid: int, chat_id: int):
     if not s or s["state"] != "collecting":
         return
 
-    n = len(s["files"])
+    n        = len(s["files"])
+    n_groups = len(s["collage_groups"])
     if s["ask_msg_id"]:
         await _del(client, chat_id, s["ask_msg_id"])
         s["ask_msg_id"] = None
 
     try:
-        ask = await client.send_message(chat_id, _ask_text(n), reply_markup=_ask_kb())
+        ask = await client.send_message(chat_id, _ask_text(n, n_groups), reply_markup=_ask_kb())
         s["ask_msg_id"] = ask.id
     except Exception as e:
         print(f"[lg] prompt: {e}")
@@ -243,6 +301,12 @@ async def cmd_m_link(client: Client, message: Message):
     if not s["files"]:
         await message.reply_text("⚠️ Send at least one file before /m_link.")
         return
+
+    # Flush any pending group that hasn't been committed yet
+    for gid, task in list(s.get("_group_flush_tasks", {}).items()):
+        if task and not task.done():
+            task.cancel()
+        await _flush_group(client, uid, gid)
 
     t = s.get("_settle_task")
     if t and not t.done():
@@ -336,12 +400,10 @@ async def _gen_ss(client: Client, uid: int, batch: int):
 
     ss_per_vid = math.ceil(SS_COUNT / n_vids)
 
-    # Reuse or create a persistent temp dir for this session's screenshots
     if not s.get("ss_tmp_dir") or not os.path.isdir(s["ss_tmp_dir"]):
         s["ss_tmp_dir"] = tempfile.mkdtemp(prefix="tgss_")
     tmp = s["ss_tmp_dir"]
 
-    # Keep a sub-folder per batch so paths never collide
     batch_dir = os.path.join(tmp, f"batch{batch}")
     os.makedirs(batch_dir, exist_ok=True)
 
@@ -404,7 +466,6 @@ async def _gen_ss(client: Client, uid: int, batch: int):
                         _back_kb())
             return
 
-        # ── Store paths in session — NO DM upload, NO delete ──────────────
         old_n = len(s["ss_paths"])
         s["ss_paths"].extend(collected_paths)
 
@@ -446,31 +507,26 @@ async def _show_nav(client: Client, uid: int):
     caption = f"🖼 **Screenshot  {idx + 1} / {total}**"
     markup  = _nav_kb(idx, total)
 
-    # Use cached Telegram file_id if available (avoids re-uploading = much faster)
     ss_cache: dict = s.setdefault("ss_file_id_cache", {})
     cached_fid = ss_cache.get(path)
 
     try:
         if cached_fid:
-            # Fast path: edit using cached file_id (no upload needed)
             await client.edit_message_media(
                 chat_id, nav_id,
                 InputMediaPhoto(media=cached_fid, caption=caption),
                 reply_markup=markup,
             )
         else:
-            # First time showing this SS: upload from disk
             try:
                 new_msg = await client.edit_message_media(
                     chat_id, nav_id,
                     InputMediaPhoto(media=path, caption=caption),
                     reply_markup=markup,
                 )
-                # Cache the returned file_id for instant future navigation
                 if new_msg and new_msg.photo:
                     ss_cache[path] = new_msg.photo.file_id
             except Exception:
-                # edit_message_media failed — delete and resend fresh
                 await _del(client, chat_id, nav_id)
                 new = await client.send_photo(
                     chat_id, path, caption=caption, reply_markup=markup,
@@ -498,14 +554,30 @@ async def _more_ss(client: Client, uid: int):
 
 # ── post to channel ───────────────────────────────────────────────────────────
 
+def _make_input_media_for_post(fid: str, mtype: str):
+    """Build an InputMedia* object with NO caption (captions stripped from collage items)."""
+    if mtype == "photo":
+        return InputMediaPhoto(media=fid)
+    elif mtype in ("video", "animation"):
+        return InputMediaVideo(media=fid)
+    elif mtype == "document":
+        return InputMediaDocument(media=fid)
+    elif mtype == "audio":
+        return InputMediaAudio(media=fid)
+    else:
+        return InputMediaDocument(media=fid)
+
+
 async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
     s = LINK_SESSIONS.get(uid)
     if not s:
         return
 
-    chat_id = s["chat_id"]
-    nav_id  = s["nav_msg_id"]
-    files   = s["files"]
+    chat_id       = s["chat_id"]
+    nav_id        = s["nav_msg_id"]
+    files         = s["files"]
+    collage_groups = s.get("collage_groups", [])
+
     if not files:
         return
 
@@ -526,51 +598,128 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
     bot_me  = await client.get_me()
     tg_link = f"https://t.me/{bot_me.username}?start=link_{link_id}"
 
-    caption = f">🆔 Post ID : `{post_id}`"
-
     get_btn = InlineKeyboardMarkup([
         [InlineKeyboardButton("🎬 Get Video", url=tg_link)]
     ])
 
-    # ── Choose preview media ──────────────────────────────────────────────
+    # ── Determine if this is a collage post or a single/mixed post ──────
+    # A "collage post" means the entire content is one media group (all files
+    # belong to one collage group with 2+ items, no extra single files).
+    is_pure_collage = (
+        len(collage_groups) == 1
+        and len(collage_groups[0]) == len(files)
+        and len(files) >= 2
+    )
+
+    # ── Choose preview / post strategy ───────────────────────────────────
     if custom:
+        # Admin picked a custom thumbnail → use it as a single photo post
         pfid, pmtype = custom["file_id"], custom["media_type"]
         use_path = None
-    elif s["ss_paths"]:
-        # ALWAYS prefer the selected screenshot as the post thumbnail (photo)
-        # regardless of whether the source file was video or anything else
-        ss_cache: dict = s.get("ss_file_id_cache", {})
-        current_path = s["ss_paths"][s["ss_index"]]
-        cached_fid = ss_cache.get(current_path)
-        if cached_fid:
-            use_path = None
-            pfid, pmtype = cached_fid, "photo"
-        else:
-            use_path = current_path
-            pfid, pmtype = None, "photo"
-    elif single:
-        pfid, pmtype = files[0]["file_id"], files[0]["media_type"]
-        use_path = None
-    else:
-        pfid, pmtype = files[0]["file_id"], files[0]["media_type"]
-        use_path = None
+        await _post_single(client, pfid, pmtype, use_path, get_btn)
 
-    # ── Send to channel ───────────────────────────────────────────────────
-    try:
-        if pmtype == "photo":
-            media = use_path if use_path else pfid
-            await client.send_photo(POST_CHANNEL, media, caption=caption, reply_markup=get_btn)
-        elif pmtype in ("video", "animation"):
-            await client.send_video(POST_CHANNEL, pfid, caption=caption, reply_markup=get_btn)
-        elif pmtype == "document":
-            await client.send_document(POST_CHANNEL, pfid, caption=caption, reply_markup=get_btn)
-        elif pmtype == "audio":
-            await client.send_audio(POST_CHANNEL, pfid, caption=caption, reply_markup=get_btn)
+    elif is_pure_collage:
+        # ── Send as media group (collage) with the link button on the LAST item ──
+        group_items = collage_groups[0]
+        media_list  = []
+        for idx, item in enumerate(group_items):
+            fid, mtype = item["file_id"], item["media_type"]
+            # Only the last item in the group can have a reply_markup
+            # (Telegram only supports reply_markup on the last item of a media group).
+            # We keep captions blank — sender info stripped as requested.
+            if mtype == "photo":
+                media_list.append(InputMediaPhoto(media=fid))
+            elif mtype in ("video", "animation"):
+                media_list.append(InputMediaVideo(media=fid))
+            elif mtype == "document":
+                media_list.append(InputMediaDocument(media=fid))
+            elif mtype == "audio":
+                media_list.append(InputMediaAudio(media=fid))
+            else:
+                media_list.append(InputMediaDocument(media=fid))
+
+        try:
+            # send_media_group does not support reply_markup per-message in older
+            # Pyrogram versions; we send the group first, then send the link button
+            # as a text reply to the last sent message.
+            sent_msgs = await client.send_media_group(POST_CHANNEL, media_list)
+            # Send the Get Video button as a follow-up text message
+            if sent_msgs:
+                await client.send_message(
+                    POST_CHANNEL,
+                    f">🆔 Post ID : `{post_id}`",
+                    reply_markup=get_btn,
+                    reply_to_message_id=sent_msgs[-1].id,
+                )
+        except Exception as err:
+            await _edit(client, chat_id, nav_id, f"⚠️ **Post failed.**\n\nError: `{err}`", None)
+            return
+
+    elif len(collage_groups) > 0:
+        # Mixed: multiple collage groups and/or single files.
+        # Post each collage group as a media group, then post singles,
+        # and attach the link button to the very last sent message.
+        try:
+            last_msg = None
+            # Post collage groups first
+            for grp in collage_groups:
+                media_list = [_make_input_media_for_post(f["file_id"], f["media_type"]) for f in grp]
+                msgs = await client.send_media_group(POST_CHANNEL, media_list)
+                if msgs:
+                    last_msg = msgs[-1]
+                await asyncio.sleep(0.3)
+
+            # Then post any standalone (non-collage) files
+            collage_fids = {f["file_id"] for grp in collage_groups for f in grp}
+            standalone   = [f for f in files if f["file_id"] not in collage_fids]
+            for f in standalone[:-1]:
+                # Send without button
+                sent = await _post_single_raw(client, f["file_id"], f["media_type"])
+                if sent:
+                    last_msg = sent
+                await asyncio.sleep(0.2)
+
+            # Last standalone file gets the link button
+            if standalone:
+                last_f = standalone[-1]
+                sent = await _post_single(client, last_f["file_id"], last_f["media_type"], None, get_btn)
+                if sent:
+                    last_msg = sent
+            elif last_msg:
+                # All files were in collages — send the link button as a reply
+                await client.send_message(
+                    POST_CHANNEL,
+                    f">🆔 Post ID : `{post_id}`",
+                    reply_markup=get_btn,
+                    reply_to_message_id=last_msg.id,
+                )
+        except Exception as err:
+            await _edit(client, chat_id, nav_id, f"⚠️ **Post failed.**\n\nError: `{err}`", None)
+            return
+
+    else:
+        # ── Original single-file path ─────────────────────────────────────
+        if s["ss_paths"]:
+            ss_cache: dict = s.get("ss_file_id_cache", {})
+            current_path   = s["ss_paths"][s["ss_index"]]
+            cached_fid     = ss_cache.get(current_path)
+            if cached_fid:
+                use_path = None
+                pfid, pmtype = cached_fid, "photo"
+            else:
+                use_path = current_path
+                pfid, pmtype = None, "photo"
+        elif single:
+            pfid, pmtype = files[0]["file_id"], files[0]["media_type"]
+            use_path = None
         else:
-            await client.send_document(POST_CHANNEL, pfid, caption=caption, reply_markup=get_btn)
-    except Exception as err:
-        await _edit(client, chat_id, nav_id, f"⚠️ **Post failed.**\n\nError: `{err}`", None)
-        return
+            pfid, pmtype = files[0]["file_id"], files[0]["media_type"]
+            use_path = None
+
+        sent = await _post_single(client, pfid, pmtype, use_path, get_btn, post_id=post_id)
+        if not sent:
+            await _edit(client, chat_id, nav_id, "⚠️ **Post failed.**", None)
+            return
 
     # ── Clean up admin DM ─────────────────────────────────────────────────
     to_del: list[int] = []
@@ -589,12 +738,50 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
             pass
         await asyncio.sleep(0.05)
 
-    # ── Clean up on-disk temp directory ──────────────────────────────────
     tmp = s.get("ss_tmp_dir")
     if tmp and os.path.isdir(tmp):
         shutil.rmtree(tmp, ignore_errors=True)
 
     _kill(uid)
+
+
+async def _post_single(client: Client, fid: str, mtype: str,
+                       use_path, markup: InlineKeyboardMarkup,
+                       post_id: str = "") -> Optional[Message]:
+    """Send a single file to POST_CHANNEL with the link button. No caption."""
+    try:
+        if mtype == "photo":
+            media = use_path if use_path else fid
+            return await client.send_photo(POST_CHANNEL, media, reply_markup=markup)
+        elif mtype in ("video", "animation"):
+            return await client.send_video(POST_CHANNEL, fid, reply_markup=markup)
+        elif mtype == "document":
+            return await client.send_document(POST_CHANNEL, fid, reply_markup=markup)
+        elif mtype == "audio":
+            return await client.send_audio(POST_CHANNEL, fid, reply_markup=markup)
+        else:
+            return await client.send_document(POST_CHANNEL, fid, reply_markup=markup)
+    except Exception as e:
+        print(f"[lg] _post_single error: {e}")
+        return None
+
+
+async def _post_single_raw(client: Client, fid: str, mtype: str) -> Optional[Message]:
+    """Send a single file to POST_CHANNEL with no caption and no button."""
+    try:
+        if mtype == "photo":
+            return await client.send_photo(POST_CHANNEL, fid)
+        elif mtype in ("video", "animation"):
+            return await client.send_video(POST_CHANNEL, fid)
+        elif mtype == "document":
+            return await client.send_document(POST_CHANNEL, fid)
+        elif mtype == "audio":
+            return await client.send_audio(POST_CHANNEL, fid)
+        else:
+            return await client.send_document(POST_CHANNEL, fid)
+    except Exception as e:
+        print(f"[lg] _post_single_raw error: {e}")
+        return None
 
 
 # ── callback dispatcher (called by callback.py) ───────────────────────────────
@@ -638,7 +825,6 @@ async def handle_lg_callback(client: Client, query, data: str):
         await query.answer()
         total = len(s["ss_paths"])
         if total:
-            # Wrap: at first SS → jump to last
             s["ss_index"] = (s["ss_index"] - 1) % total
             await _show_nav(client, uid)
         return
@@ -647,7 +833,6 @@ async def handle_lg_callback(client: Client, query, data: str):
         await query.answer()
         total = len(s["ss_paths"])
         if total:
-            # Wrap: at last SS → jump to first
             s["ss_index"] = (s["ss_index"] + 1) % total
             await _show_nav(client, uid)
         return
@@ -758,6 +943,7 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
         get_cached_user_data, get_cached_verification,
         _make_file_buttons, show_verify, USER_CURRENT_VIDEO,
         USER_ACTIVE_VIDEOS, auto_delete, clear_user_cache,
+        _push_to_history_cache, _get_history_cache,
     )
 
     uid = message.from_user.id
@@ -880,10 +1066,8 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
         is_last    = (idx == last_idx)
 
         if is_last:
-            # Last file gets full caption + navigation buttons (same as send_video)
-            # Check watch history for Back button
-            history      = await mdb.get_watch_history(uid, limit=2)
-            has_previous = len(history) > 0
+            current_history  = _get_history_cache(uid)
+            has_previous     = len(current_history) > 0
             caption  = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}</b>"
             buttons  = _make_file_buttons(uid, has_previous)
             markup   = InlineKeyboardMarkup(buttons)
@@ -912,7 +1096,7 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
             sent_msg_ids.append(sent.id)
 
             if is_last:
-                # Track exactly like send_video does
+                _push_to_history_cache(uid, fid, mtype)
                 asyncio.create_task(mdb.add_to_watch_history(uid, fid, mtype))
                 USER_ACTIVE_VIDEOS.setdefault(uid, set()).add(sent.id)
                 asyncio.create_task(auto_delete(client, cid, sent.id, uid))
@@ -921,8 +1105,6 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
             print(f"[handle_link_access] {mtype}: {e}")
         await asyncio.sleep(0.3)
 
-    # Schedule deletion of ALL sent files after DELETE_TIMER seconds
-    # (auto_delete handles the last file; delete the earlier ones manually)
     if len(sent_msg_ids) > 1:
         asyncio.create_task(_delete_link_files(client, cid, sent_msg_ids[:-1]))
 
