@@ -29,6 +29,14 @@ VERIFICATION_CACHE_TTL = 60
 
 USER_CURRENT_VIDEO = {}
 
+# ==================== WATCH HISTORY CACHE ====================
+# In-memory cache of videos the user has already watched this session.
+# Structure: { user_id: [{"file_id": ..., "media_type": ...}, ...] }
+# Index 0 = most recently watched (same order as DB history).
+# This is the source of truth for the ⬅️ Back button; it grows as the user
+# navigates forward and is cleared when the DELETE_TIMER fires.
+USER_HISTORY_CACHE: dict[int, list] = {}
+
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
@@ -146,6 +154,48 @@ async def get_bot_info(client):
 # Legacy compat
 async def _get_videos():
     return await _get_videos_for_category("all")
+
+
+# ==================== HISTORY CACHE HELPERS ====================
+
+def _push_to_history_cache(uid: int, file_id: str, media_type: str):
+    """
+    Add a newly-watched file to the front of the in-memory history cache.
+    Keeps a maximum of 50 entries.
+    Only called when the user watches a NEW file (not when navigating back).
+    """
+    entry = {"file_id": file_id, "media_type": media_type}
+    hist = USER_HISTORY_CACHE.setdefault(uid, [])
+    # Avoid duplicates at the front
+    if hist and hist[0]["file_id"] == file_id:
+        return
+    hist.insert(0, entry)
+    if len(hist) > 50:
+        USER_HISTORY_CACHE[uid] = hist[:50]
+
+
+def _get_history_cache(uid: int) -> list:
+    """Return the user's in-memory watch history (newest first)."""
+    return USER_HISTORY_CACHE.get(uid, [])
+
+
+def _clear_history_cache(uid: int):
+    """Clear the in-memory watch history when the delete timer fires."""
+    USER_HISTORY_CACHE.pop(uid, None)
+
+
+def _get_prev_from_cache(uid: int, current_file_id: str):
+    """
+    Given the current file_id, return the item that was watched just before it.
+    Returns None if there is no previous (i.e. this is the first file).
+    """
+    hist = _get_history_cache(uid)
+    for idx, item in enumerate(hist):
+        if item["file_id"] == current_file_id:
+            if idx + 1 < len(hist):
+                return hist[idx + 1]
+            return None  # It IS the oldest entry — no going further back
+    return None
 
 
 # ==================== START COMMAND ====================
@@ -579,8 +629,11 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
     caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}{cat_display}</b>"
     USER_CURRENT_VIDEO[uid] = file_id
 
-    history      = await mdb.get_watch_history(uid, limit=2)
-    has_previous = len(history) > 0
+    # ── Back button: only show if user has previously watched files in cache ──
+    # has_previous is True only when the history cache already has entries
+    # (meaning this is NOT the very first file the user is getting).
+    current_history = _get_history_cache(uid)
+    has_previous = len(current_history) > 0
 
     protect = PROTECT_CONTENT
     if is_prime and PREMIUM_CAN_DOWNLOAD:
@@ -600,6 +653,9 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
             client, cid, file_id, media_type, caption, protect, buttons,
             edit_message=edit_target,
         )
+        # Push to in-memory history cache AFTER successful send (new forward navigation)
+        _push_to_history_cache(uid, file_id, media_type)
+        # Also persist to DB for cross-session history
         asyncio.create_task(mdb.add_to_watch_history(uid, file_id, media_type))
         USER_ACTIVE_VIDEOS.setdefault(uid, set()).add(sent.id)
         asyncio.create_task(auto_delete(client, cid, sent.id, uid))
@@ -662,6 +718,10 @@ async def auto_delete(client, cid, mid, uid):
             await client.delete_messages(cid, mid)
         except Exception:
             pass
+
+        # ── Clear the in-memory history cache when the delete timer fires ──
+        _clear_history_cache(uid)
+
         if uid in USER_ACTIVE_VIDEOS:
             USER_ACTIVE_VIDEOS[uid].discard(mid)
             if not USER_ACTIVE_VIDEOS[uid]:
