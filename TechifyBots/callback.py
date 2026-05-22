@@ -2,13 +2,14 @@ from pyrogram.types import (
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
 )
 from pyrogram import Client
-from Script import text
+from Script import text, _build_pro_text
 from vars import ADMIN_ID, ADMIN_IDS, DELETE_TIMER, PROTECT_CONTENT, IS_FSUB, CATEGORIES, PREMIUM_CAN_DOWNLOAD
 from Database.maindb import mdb
 from .cmds import (
     send_video, get_cached_user_data, get_bot_info,
     USER_ACTIVE_VIDEOS, USER_CURRENT_VIDEO,
     _build_category_markup, _categories_list_text, _make_file_buttons,
+    _get_prev_from_cache, _get_history_cache,
 )
 from .index import INDEX_TASKS, start_indexing
 from .link_generator import handle_lg_callback
@@ -75,7 +76,7 @@ async def callback_query_handler(client, query: CallbackQuery):
         elif data == "pro":
             await query.answer()
             current_limits = await mdb.get_global_limits()
-            pro_text = text.PRO.format(free_limit=current_limits["free_limit"])
+            pro_text = _build_pro_text(free_limit=current_limits["free_limit"])
             admin_id_int = int(ADMIN_ID) if isinstance(ADMIN_ID, int) else ADMIN_ID[0]
             try:
                 await query.message.edit_caption(
@@ -94,6 +95,23 @@ async def callback_query_handler(client, query: CallbackQuery):
                         [InlineKeyboardButton("❌ 𝖢𝗅𝗈𝗌𝖾", callback_data="close")],
                     ])
                 )
+
+        elif data == "buy_subscription":
+            # "Buy Subscription" button from /myplan — edit the same message to show PRO info
+            await query.answer()
+            current_limits = await mdb.get_global_limits()
+            pro_text = _build_pro_text(free_limit=current_limits["free_limit"])
+            admin_id_int = int(ADMIN_ID) if isinstance(ADMIN_ID, int) else ADMIN_ID[0]
+            try:
+                await query.message.edit_text(
+                    pro_text,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("💳 Send Screenshot", user_id=admin_id_int)],
+                        [InlineKeyboardButton("❌ 𝖢𝗅𝗈𝗌𝖾", callback_data="close")],
+                    ])
+                )
+            except Exception:
+                pass
 
         elif data == "admincmds":
             if not _is_admin(uid):
@@ -301,7 +319,9 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
         await query.answer("❌ No current file found", show_alert=True)
         return
 
-    prev_item = await mdb.get_previous_video(user_id, current_file_id)
+    # Use the in-memory history cache to find the previous file.
+    # This guarantees we only go back to files the user actually already watched.
+    prev_item = _get_prev_from_cache(user_id, current_file_id)
     if not prev_item:
         await query.answer("❌ No previous file in history", show_alert=True)
         return
@@ -326,19 +346,25 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
     mins = DELETE_TIMER // 60
     caption = f"<b>⚠️ Delete: {mins}min\n\n{usage_text}{cat_display}</b>"
 
-    history = await mdb.get_watch_history(user_id, limit=50)
     prev_file_id = prev_item["file_id"]
     media_type = prev_item.get("media_type", "video")
+
+    # Update current video pointer (navigating backwards)
     USER_CURRENT_VIDEO[user_id] = prev_file_id
 
-    current_index = next(
-        (i for i, item in enumerate(history) if item["file_id"] == prev_file_id), None
+    # Determine if there's a file even further back in history cache
+    history_cache = _get_history_cache(user_id)
+    current_index_in_cache = next(
+        (i for i, item in enumerate(history_cache) if item["file_id"] == prev_file_id), None
     )
-    has_previous = current_index is not None and current_index + 1 < len(history)
+    # has_previous = True only when there's still an older entry after this one
+    has_previous = current_index_in_cache is not None and current_index_in_cache + 1 < len(history_cache)
 
     protect = PROTECT_CONTENT
     if is_prime and PREMIUM_CAN_DOWNLOAD:
         protect = False
+
+    # NOTE: We do NOT increment the usage counter here — going back is free.
 
     buttons = _make_file_buttons(user_id, has_previous)
     markup = InlineKeyboardMarkup(buttons)
@@ -432,6 +458,7 @@ async def handle_share_video(client: Client, query: CallbackQuery):
         }),
     )
 
+    # FIX: Use ?start= deep link so the bot's /start handler correctly routes it
     link = f"https://t.me/{bot_info.username}?start=share_{link_id}"
     await query.message.reply_text(
         f"🔗 **Share Link Generated!**\n\n`{link}`\n\nShare with your buddies 😉",
@@ -443,8 +470,15 @@ async def handle_share_video(client: Client, query: CallbackQuery):
 # ==================== SHARE LINK ACCESS ====================
 
 async def handle_share_link_access(client, message, link_id: str):
+    """
+    Called when a user opens a share link (?start=share_<id>).
+    Only force-sub is checked — no limit check, no ban check.
+    The video is sent with the full set of navigation buttons (Next/Back/Share/Category).
+    """
+    # Force-sub is the only gate
     if IS_FSUB and not await get_fsub(client, message):
         return
+
     link_data = await mdb.async_db["share_links"].find_one({"link_id": link_id})
     if not link_data:
         await message.reply_text("❌ Invalid or expired share link.")
@@ -453,29 +487,53 @@ async def handle_share_link_access(client, message, link_id: str):
     file_id = link_data["file_id"]
     media_type = link_data.get("media_type", "video")
 
+    # Increment access count asynchronously
     asyncio.create_task(
         mdb.async_db["share_links"].update_one(
             {"link_id": link_id}, {"$inc": {"access_count": 1}}
         )
     )
 
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get More Files", callback_data="getvideo")]])
-    caption = "🔗 **Shared file — tap below to get more!**"
+    uid = message.from_user.id
+    mins = DELETE_TIMER // 60
+    caption = f"<b>⚠️ Delete: {mins}min\n\n🔗 Shared File</b>"
+
+    # Track current video for this user so Back/Next/Share buttons work
+    USER_CURRENT_VIDEO[uid] = file_id
+
+    # Determine if user has a back history
+    current_history = _get_history_cache(uid)
+    has_previous = len(current_history) > 0
+
+    buttons = _make_file_buttons(uid, has_previous)
+    markup = InlineKeyboardMarkup(buttons)
+
+    # Respect protect content — share links are free but still honor the setting
+    protect = PROTECT_CONTENT
 
     try:
-        kwargs = dict(caption=caption, protect_content=PROTECT_CONTENT, reply_markup=markup)
+        kwargs = dict(caption=caption, protect_content=protect, reply_markup=markup)
         if media_type == "video":
-            await client.send_video(message.chat.id, file_id, **kwargs)
+            sent = await client.send_video(message.chat.id, file_id, **kwargs)
         elif media_type == "photo":
-            await client.send_photo(message.chat.id, file_id, **kwargs)
+            sent = await client.send_photo(message.chat.id, file_id, **kwargs)
         elif media_type == "audio":
-            await client.send_audio(message.chat.id, file_id, **kwargs)
+            sent = await client.send_audio(message.chat.id, file_id, **kwargs)
         elif media_type in ("voice",):
-            await client.send_voice(message.chat.id, file_id, **kwargs)
+            sent = await client.send_voice(message.chat.id, file_id, **kwargs)
         elif media_type == "animation":
-            await client.send_animation(message.chat.id, file_id, **kwargs)
+            sent = await client.send_animation(message.chat.id, file_id, **kwargs)
         else:
-            await client.send_document(message.chat.id, file_id, **kwargs)
+            sent = await client.send_document(message.chat.id, file_id, **kwargs)
+
+        # Push to history cache (counts as watched) and schedule auto-delete
+        _push_to_history_cache(uid, file_id, media_type)
+        asyncio.create_task(mdb.add_to_watch_history(uid, file_id, media_type))
+        USER_ACTIVE_VIDEOS.setdefault(uid, set()).add(sent.id)
+
+        from .cmds import auto_delete
+        asyncio.create_task(auto_delete(client, message.chat.id, sent.id, uid))
+
     except Exception as e:
         print(f"[handle_share_link_access] error: {e}")
         await message.reply_text("⚠️ Failed to load shared file.")
