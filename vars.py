@@ -6,7 +6,7 @@ API_HASH = os.getenv("API_HASH", "2302adc174dbc954ae5081eda5131166")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://gd3251791_db_user:GDPQbmyXAEFDGpbL@cluster0.6jxsnxc.mongodb.net/?appName=Cluster0")
 
-_channel_env = os.getenv("DATABASE_CHANNEL_ID", "-1002517753823 -1003782705533 -1003764718856 -1003734799227 -1003722959589 -1003889132598 -1003855522098 -1003749645073")
+_channel_env = os.getenv("DATABASE_CHANNEL_ID", "-1002517753823 -1003782705533 -1003764718856 -1003734799227 -1003722959589 -1003889132598 -1003855522098 -1003749645073 -1003366943724")
 if " " in _channel_env:
     DATABASE_CHANNEL_ID = [int(ch.strip()) for ch in _channel_env.split() if ch.strip().lstrip("-").isdigit()]
 else:
@@ -60,7 +60,7 @@ THREE_VERIFY_GAP = int(os.getenv("THREE_VERIFY_GAP", "21600"))
 #      "🔥 Viral":    [-1003782705533],
 #      "💎 Premium": [-1009876543210, -1001122334455],
 CATEGORIES: dict = {
-    "🔥 Viral":    [-1003782705533],
+    "🔥 Viral":    [-1003782705533, -1003366943724],
     "🖼️ Photos":   [-1003764718856],
     "🔞 Teen":     [-1003722959589],
     "👩‍🦳 English":  [-1003889132598],
