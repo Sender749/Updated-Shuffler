@@ -1,7 +1,7 @@
 from pyrogram.types import *
 from Database.userdb import udb
 from Database.maindb import mdb
-from vars import ADMIN_IDS
+from vars import ADMIN_IDS, POST_CHANNEL
 import asyncio
 from pyrogram.errors import *
 from pyrogram import *
@@ -244,38 +244,142 @@ async def delete_all_videos_command(client, message):
         await message.reply_text(f"**Error: {str(e)}**")
 
 
+# ── /delete helpers ──────────────────────────────────────────────────────────
+
+# Matches both private ("t.me/c/<internal_id>/<msg_id>") and public
+# ("t.me/<username>/<msg_id>") Telegram message links, with or without a
+# leading "https://" and with or without a trailing "?..." query string.
+_MSG_LINK_RE = re.compile(
+    r"(?:https?://)?t\.me/(c/)?([A-Za-z0-9_]+)/(\d+)(?:[/?].*)?$", re.IGNORECASE
+)
+
+
+def _parse_msg_link(target: str):
+    """
+    Parse a Telegram message link into (channel_ref, msg_id).
+    channel_ref is an int chat_id for private '/c/' links (already
+    normalized with the -100 prefix), or a str username for public links.
+    Returns None if `target` isn't a recognizable t.me message link.
+    """
+    m = _MSG_LINK_RE.search(target.strip())
+    if not m:
+        return None
+    is_private, ident, mid = m.group(1), m.group(2), m.group(3)
+    msg_id = int(mid)
+    if is_private:
+        if not ident.isdigit():
+            return None
+        return int(f"-100{ident}"), msg_id
+    return ident, msg_id
+
+
+async def _resolve_channel_id(client, channel_ref):
+    """Resolve a channel_ref (int chat_id or str username) to a chat_id int."""
+    if isinstance(channel_ref, int):
+        return channel_ref
+    try:
+        chat = await client.get_chat(channel_ref)
+        return chat.id
+    except Exception:
+        return None
+
+
+async def _delete_one_target(client, target: str) -> str:
+    """Delete a single /delete target (msg link, post_id, link_id, or video_id).
+    Returns a one-line human-readable status string."""
+    target = target.strip()
+    if not target:
+        return ""
+
+    # ── 1) Telegram message link → delete that specific indexed file ────────
+    parsed = _parse_msg_link(target)
+    if parsed:
+        channel_ref, msg_id = parsed
+        chat_id = await _resolve_channel_id(client, channel_ref)
+        if chat_id is None:
+            return f"❌ `{target}` — couldn't resolve that channel (is the bot a member/admin there?)."
+        result = await mdb.async_video_collection.delete_one(
+            {"video_id": msg_id, "source_channel_id": chat_id}
+        )
+        if result.deleted_count:
+            return f"✅ `{target}` — deleted indexed file (channel `{chat_id}`, msg `{msg_id}`)."
+        return f"⚠️ `{target}` — no indexed DB entry found for channel `{chat_id}`, msg `{msg_id}`."
+
+    # ── 2) Bare integer → legacy video_id ───────────────────────────────────
+    try:
+        video_id = int(target)
+        deleted = await mdb.delete_video_by_id(video_id)
+        if deleted:
+            return f"✅ `{video_id}` — deleted video ID from videos DB."
+    except ValueError:
+        pass
+
+    # ── 3) Post ID → delete all its files from DB + the actual channel post ─
+    doc = await mdb.async_db["file_links"].find_one({"post_id": target})
+    if doc:
+        channel_msg_ids = doc.get("channel_msg_ids") or []
+        post_channel_id = doc.get("post_channel_id", POST_CHANNEL)
+        if channel_msg_ids:
+            try:
+                await client.delete_messages(post_channel_id, channel_msg_ids)
+            except Exception as e:
+                print(f"[/delete] failed to delete channel post(s) for post_id {target}: {e}")
+        await mdb.async_db["file_links"].delete_one({"post_id": target})
+        n_files = len(doc.get("files", []))
+        if channel_msg_ids:
+            return f"✅ `{target}` — deleted {n_files} file(s) from DB and removed the post from the channel."
+        return f"✅ `{target}` — deleted {n_files} file(s) from DB (no stored channel message to remove — posted before this feature was added)."
+
+    # ── 4) Link ID → same as post_id but keyed differently ──────────────────
+    doc = await mdb.async_db["file_links"].find_one({"link_id": target})
+    if doc:
+        channel_msg_ids = doc.get("channel_msg_ids") or []
+        post_channel_id = doc.get("post_channel_id", POST_CHANNEL)
+        if channel_msg_ids:
+            try:
+                await client.delete_messages(post_channel_id, channel_msg_ids)
+            except Exception as e:
+                print(f"[/delete] failed to delete channel post(s) for link_id {target}: {e}")
+        await mdb.async_db["file_links"].delete_one({"link_id": target})
+        return f"✅ `{target}` — deleted link (and its channel post, if any)."
+
+    return f"❌ `{target}` — no record found."
+
+
 @Client.on_message(filters.command("delete") & filters.private)
 async def delete_video_by_id_command(client, message):
     if not is_admin(message.from_user.id):
         return
     if len(message.command) < 2:
         await message.reply_text(
-            "Usage:\n"
-            "/delete <video_id> — integer video ID\n"
-            "/delete <post_id>  — post ID shown in channel caption\n"
-            "/delete <link_id>  — internal link ID"
+            "**Usage:**\n"
+            "`/delete <msg_link>` — deletes that specific file from the indexed videos DB "
+            "(the channel + message number are read straight from the link, so this works "
+            "across any of your multiple index channels)\n"
+            "`/delete <post_id>` — deletes all files under that Post ID from the DB **and** "
+            "removes the post from the post channel\n"
+            "`/delete <link_id>` — deletes an internal share/link record\n"
+            "`/delete <video_id>` — legacy numeric video ID\n\n"
+            "You can mix multiple targets in one command, comma-separated:\n"
+            "`/delete https://t.me/c/1234567890/42, ABC123xyz09, 9187`"
         )
         return
 
-    target = message.command[1].strip()
-
-    try:
-        video_id = int(target)
-        deleted = await mdb.delete_video_by_id(video_id)
-        if deleted:
-            await message.reply_text(f"Deleted video ID `{video_id}` from videos DB.")
-            return
-    except ValueError:
-        pass
-
-    r1 = await mdb.async_db["file_links"].delete_one({"post_id": target})
-    if r1.deleted_count:
-        await message.reply_text(f"Deleted link set with Post ID `{target}`.")
+    # Everything after the command name, so message links (which contain no
+    # spaces but do need to be read as a whole) and comma-separated lists
+    # both work correctly.
+    raw = message.text.split(None, 1)[1] if len(message.text.split(None, 1)) > 1 else ""
+    targets = [t.strip() for t in raw.split(",") if t.strip()]
+    if not targets:
+        await message.reply_text("No valid targets given.")
         return
 
-    r2 = await mdb.async_db["file_links"].delete_one({"link_id": target})
-    if r2.deleted_count:
-        await message.reply_text(f"Deleted link with Link ID `{target}`.")
-        return
+    status = await message.reply_text(f"⏳ Processing {len(targets)} target(s)...")
+    results = []
+    for target in targets:
+        try:
+            results.append(await _delete_one_target(client, target))
+        except Exception as e:
+            results.append(f"❌ `{target}` — error: `{e}`")
 
-    await message.reply_text(f"No record found for ID `{target}`.")
+    await status.edit_text("\n".join(results))
