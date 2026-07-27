@@ -602,6 +602,11 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
         [InlineKeyboardButton("🎬 Get Video", url=tg_link)]
     ])
 
+    # Tracks every message id we post to POST_CHANNEL for this post, so the
+    # /delete command can later remove the actual channel post(s) as well as
+    # the DB record — not just the DB record.
+    posted_msg_ids: list[int] = []
+
     # ── Determine if this is a collage post or a single/mixed post ──────
     # A "collage post" means the entire content is one media group (all files
     # belong to one collage group with 2+ items, no extra single files).
@@ -628,6 +633,7 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
             # cleaning up, exactly like every other posting path below.
             await _edit(client, chat_id, nav_id, "⚠️ **Post failed.** Check bot logs / POST_CHANNEL permissions.", None)
             return
+        posted_msg_ids.append(sent.id)
 
     elif is_pure_collage:
         # ── Send as media group (collage) with the link button on the LAST item ──
@@ -654,14 +660,18 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
             # Pyrogram versions; we send the group first, then send the link button
             # as a text reply to the last sent message.
             sent_msgs = await client.send_media_group(POST_CHANNEL, media_list)
+            if sent_msgs:
+                posted_msg_ids.extend(m.id for m in sent_msgs)
             # Send the Get Video button as a follow-up text message
             if sent_msgs:
-                await client.send_message(
+                btn_msg = await client.send_message(
                     POST_CHANNEL,
                     f">🆔 Post ID : `{post_id}`",
                     reply_markup=get_btn,
                     reply_to_message_id=sent_msgs[-1].id,
                 )
+                if btn_msg:
+                    posted_msg_ids.append(btn_msg.id)
         except Exception as err:
             await _edit(client, chat_id, nav_id, f"⚠️ **Post failed.**\n\nError: `{err}`", None)
             return
@@ -678,6 +688,7 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
                 msgs = await client.send_media_group(POST_CHANNEL, media_list)
                 if msgs:
                     last_msg = msgs[-1]
+                    posted_msg_ids.extend(m.id for m in msgs)
                 await asyncio.sleep(0.3)
 
             # Then post any standalone (non-collage) files
@@ -688,22 +699,26 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
                 sent = await _post_single_raw(client, f["file_id"], f["media_type"])
                 if sent:
                     last_msg = sent
+                    posted_msg_ids.append(sent.id)
                 await asyncio.sleep(0.2)
 
             # Last standalone file gets the link button
             if standalone:
                 last_f = standalone[-1]
-                sent = await _post_single(client, last_f["file_id"], last_f["media_type"], None, get_btn)
+                sent = await _post_single(client, last_f["file_id"], last_f["media_type"], None, get_btn, post_id=post_id)
                 if sent:
                     last_msg = sent
+                    posted_msg_ids.append(sent.id)
             elif last_msg:
                 # All files were in collages — send the link button as a reply
-                await client.send_message(
+                btn_msg = await client.send_message(
                     POST_CHANNEL,
                     f">🆔 Post ID : `{post_id}`",
                     reply_markup=get_btn,
                     reply_to_message_id=last_msg.id,
                 )
+                if btn_msg:
+                    posted_msg_ids.append(btn_msg.id)
         except Exception as err:
             await _edit(client, chat_id, nav_id, f"⚠️ **Post failed.**\n\nError: `{err}`", None)
             return
@@ -731,6 +746,18 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
         if not sent:
             await _edit(client, chat_id, nav_id, "⚠️ **Post failed.**", None)
             return
+        posted_msg_ids.append(sent.id)
+
+    # ── Persist the POST_CHANNEL message id(s) so /delete can remove the
+    #    actual channel post later, not just the DB record ─────────────────
+    if posted_msg_ids:
+        try:
+            await mdb.async_db["file_links"].update_one(
+                {"link_id": link_id},
+                {"$set": {"channel_msg_ids": posted_msg_ids, "post_channel_id": POST_CHANNEL}}
+            )
+        except Exception as e:
+            print(f"[lg] failed to persist channel_msg_ids: {e}")
 
     # ── Clean up admin DM ─────────────────────────────────────────────────
     to_del: list[int] = []
@@ -759,19 +786,23 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
 async def _post_single(client: Client, fid: str, mtype: str,
                        use_path, markup: InlineKeyboardMarkup,
                        post_id: str = "") -> Optional[Message]:
-    """Send a single file to POST_CHANNEL with the link button. No caption."""
+    """Send a single file to POST_CHANNEL with the link button and Post ID caption."""
+    # BUGFIX: post_id used to be accepted but silently dropped here, so
+    # single-file posts had no Post ID caption at all (unlike collage posts,
+    # which show it in a follow-up message). Restore it as the post caption.
+    caption = f">🆔 Post ID : `{post_id}`" if post_id else None
     try:
         if mtype == "photo":
             media = use_path if use_path else fid
-            return await client.send_photo(POST_CHANNEL, media, reply_markup=markup)
+            return await client.send_photo(POST_CHANNEL, media, caption=caption, reply_markup=markup)
         elif mtype in ("video", "animation"):
-            return await client.send_video(POST_CHANNEL, fid, reply_markup=markup)
+            return await client.send_video(POST_CHANNEL, fid, caption=caption, reply_markup=markup)
         elif mtype == "document":
-            return await client.send_document(POST_CHANNEL, fid, reply_markup=markup)
+            return await client.send_document(POST_CHANNEL, fid, caption=caption, reply_markup=markup)
         elif mtype == "audio":
-            return await client.send_audio(POST_CHANNEL, fid, reply_markup=markup)
+            return await client.send_audio(POST_CHANNEL, fid, caption=caption, reply_markup=markup)
         else:
-            return await client.send_document(POST_CHANNEL, fid, reply_markup=markup)
+            return await client.send_document(POST_CHANNEL, fid, caption=caption, reply_markup=markup)
     except Exception as e:
         print(f"[lg] _post_single error: {e}")
         return None
