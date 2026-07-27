@@ -210,7 +210,15 @@ async def start_command(client, message):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support", url=f"https://t.me/{ADMIN_USERNAME}")]])
         )
         return
-    if IS_FSUB and not await get_fsub(client, message):
+
+    # BUGFIX: read the deep-link payload (share_<id> / link_<id> / verify_<id>)
+    # BEFORE the force-sub check, and pass it to get_fsub() so its "Try Again"
+    # button can resume this exact link after the user joins. Previously the
+    # fsub check ran first with no knowledge of the payload, so "Try Again"
+    # always sent the user to a bare /start and their shared file was lost.
+    start_data = message.command[1] if len(message.command) > 1 else None
+
+    if IS_FSUB and not await get_fsub(client, message, start_param=start_data):
         return
 
     if len(message.command) > 1:
