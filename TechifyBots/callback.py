@@ -476,7 +476,7 @@ async def handle_share_link_access(client, message, link_id: str):
     The video is sent with the full set of navigation buttons (Next/Back/Share/Category).
     """
     # Force-sub is the only gate
-    if IS_FSUB and not await get_fsub(client, message):
+    if IS_FSUB and not await get_fsub(client, message, start_param=f"share_{link_id}"):
         return
 
     link_data = await mdb.async_db["share_links"].find_one({"link_id": link_id})
