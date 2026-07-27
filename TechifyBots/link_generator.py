@@ -616,7 +616,18 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
         # Admin picked a custom thumbnail → use it as a single photo post
         pfid, pmtype = custom["file_id"], custom["media_type"]
         use_path = None
-        await _post_single(client, pfid, pmtype, use_path, get_btn)
+        sent = await _post_single(client, pfid, pmtype, use_path, get_btn, post_id=post_id)
+        if not sent:
+            # BUGFIX: previously the return value of _post_single was never
+            # checked here, so if sending to POST_CHANNEL failed (wrong
+            # POST_CHANNEL id, bot not admin there, invalid file_id, etc.)
+            # the error was swallowed silently and the code fell straight
+            # through to the "success" cleanup below — deleting the admin's
+            # messages and resetting the session even though nothing was
+            # ever posted. Now we surface the failure and stop before
+            # cleaning up, exactly like every other posting path below.
+            await _edit(client, chat_id, nav_id, "⚠️ **Post failed.** Check bot logs / POST_CHANNEL permissions.", None)
+            return
 
     elif is_pure_collage:
         # ── Send as media group (collage) with the link button on the LAST item ──
@@ -978,7 +989,7 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
         return
 
     # ── Force-sub check ───────────────────────────────────────────────────
-    if IS_FSUB and not await get_fsub(client, message):
+    if IS_FSUB and not await get_fsub(client, message, start_param=f"link_{link_id}"):
         stop_anim.set()
         anim_task.cancel()
         try:
