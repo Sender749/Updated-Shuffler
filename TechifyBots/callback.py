@@ -487,12 +487,26 @@ async def handle_share_link_access(client, message, link_id: str):
     file_id = link_data["file_id"]
     media_type = link_data.get("media_type", "video")
 
-    # Increment access count asynchronously
-    asyncio.create_task(
-        mdb.async_db["share_links"].update_one(
-            {"link_id": link_id}, {"$inc": {"access_count": 1}}
-        )
-    )
+    # Increment access count asynchronously.
+    # BUGFIX: this used to call asyncio.create_task() directly on the return
+    # value of mdb.async_db["share_links"].update_one(...). create_task()
+    # requires a native coroutine — if Motor ever handed back a Future
+    # instead (e.g. bridging event loops under certain deployment setups),
+    # this raised "TypeError: a coroutine was expected, got <Future ...>"
+    # immediately, and since this call sat OUTSIDE the try/except below, the
+    # whole handler crashed before it ever reached the code that sends the
+    # video. Wrapping it in our own async def guarantees create_task always
+    # gets a real coroutine, and the inner try/except stops a failed counter
+    # bump from ever being able to block file delivery.
+    async def _bump_share_access_count():
+        try:
+            await mdb.async_db["share_links"].update_one(
+                {"link_id": link_id}, {"$inc": {"access_count": 1}}
+            )
+        except Exception as e:
+            print(f"[handle_share_link_access] access_count bump failed: {e}")
+
+    asyncio.create_task(_bump_share_access_count())
 
     uid = message.from_user.id
     mins = DELETE_TIMER // 60
