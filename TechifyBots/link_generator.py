@@ -978,7 +978,6 @@ async def receive_custom(client: Client, message: Message):
 # ── handle_link_access (called from cmds.py on ?start=link_<id>) ─────────────
 
 async def handle_link_access(client: Client, message: Message, link_id: str):
-    from vars import IS_FSUB, IS_VERIFY, PROTECT_CONTENT, PREMIUM_CAN_DOWNLOAD
     from .fsub import get_fsub
     from Database.userdb import udb
     from .cmds import (
@@ -1020,7 +1019,8 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
         return
 
     # ── Force-sub check ───────────────────────────────────────────────────
-    if IS_FSUB and not await get_fsub(client, message, start_param=f"link_{link_id}"):
+    bot_settings = await mdb.get_bot_settings()
+    if bot_settings["is_fsub"] and not await get_fsub(client, message, start_param=f"link_{link_id}"):
         stop_anim.set()
         anim_task.cancel()
         try:
@@ -1061,10 +1061,10 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
 
     if is_prime:
         usage_text = "🌟 User Plan : Prime"
-        protect = False if PREMIUM_CAN_DOWNLOAD else PROTECT_CONTENT
+        protect = False if bot_settings["premium_can_download"] else bot_settings["protect_content"]
     else:
-        protect = PROTECT_CONTENT
-        if IS_VERIFY:
+        protect = bot_settings["protect_content"]
+        if bot_settings["is_verify"]:
             verified, is_second, is_third = await get_cached_verification(uid)
             if verified and not is_second and not is_third:
                 usage_text = "**Status : ✅ Verified**"
@@ -1082,13 +1082,8 @@ async def handle_link_access(client: Client, message: Message, link_id: str):
                     await show_verify(client, message, uid, is_second, is_third)
                     return
         else:
-            usage = await mdb.check_and_increment_usage(uid)
-            if not usage["allowed"]:
-                await _stop_and_edit(
-                    f"**🚫 Daily limit reached ({usage['limit']})\n\nUpgrade to Prime!**"
-                )
-                return
-            usage_text = f"📊 Daily Limit : {usage['count']}/{usage['limit']}"
+            # Verification system is OFF → free daily-limit is OFF too.
+            usage_text = "📊 Access : Unlimited"
 
     # Animation done — delete it before sending files
     stop_anim.set()
