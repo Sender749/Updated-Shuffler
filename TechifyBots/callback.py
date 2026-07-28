@@ -13,6 +13,7 @@ from .cmds import (
 )
 from .index import INDEX_TASKS, start_indexing
 from .link_generator import handle_lg_callback
+from .admin import handle_settings_toggle
 import asyncio, string, random
 from datetime import datetime
 from .fsub import get_fsub
@@ -31,6 +32,11 @@ async def callback_query_handler(client, query: CallbackQuery):
         # ── link-generator callbacks ──────────────────────────────────────
         if data.startswith("lg_"):
             await handle_lg_callback(client, query, data)
+            return
+
+        # ── /settings toggle callbacks ──────────────────────────────────────
+        if data.startswith("stg_toggle_"):
+            await handle_settings_toggle(client, query)
             return
 
         # ==================== GENERAL ====================
@@ -75,8 +81,8 @@ async def callback_query_handler(client, query: CallbackQuery):
 
         elif data == "pro":
             await query.answer()
-            current_limits = await mdb.get_global_limits()
-            pro_text = _build_pro_text(free_limit=current_limits["free_limit"])
+            current_limits, bot_settings = await asyncio.gather(mdb.get_global_limits(), mdb.get_bot_settings())
+            pro_text = _build_pro_text(free_limit=current_limits["free_limit"], premium_can_download=bot_settings["premium_can_download"])
             admin_id_int = int(ADMIN_ID) if isinstance(ADMIN_ID, int) else ADMIN_ID[0]
             try:
                 await query.message.edit_caption(
@@ -99,8 +105,8 @@ async def callback_query_handler(client, query: CallbackQuery):
         elif data == "buy_subscription":
             # "Buy Subscription" button from /myplan — edit the same message to show PRO info
             await query.answer()
-            current_limits = await mdb.get_global_limits()
-            pro_text = _build_pro_text(free_limit=current_limits["free_limit"])
+            current_limits, bot_settings = await asyncio.gather(mdb.get_global_limits(), mdb.get_bot_settings())
+            pro_text = _build_pro_text(free_limit=current_limits["free_limit"], premium_can_download=bot_settings["premium_can_download"])
             admin_id_int = int(ADMIN_ID) if isinstance(ADMIN_ID, int) else ADMIN_ID[0]
             try:
                 await query.message.edit_text(
@@ -127,7 +133,8 @@ async def callback_query_handler(client, query: CallbackQuery):
 
         elif data == "getvideo":
             await query.answer()
-            if IS_FSUB and not await get_fsub(client, query.message, user_id=uid):
+            bot_settings = await mdb.get_bot_settings()
+            if bot_settings["is_fsub"] and not await get_fsub(client, query.message, user_id=uid):
                 return
             msg = query.message
             # Check if this message has any media that can be edited in-place
@@ -164,6 +171,8 @@ async def callback_query_handler(client, query: CallbackQuery):
 
             user = await get_cached_user_data(uid)
             is_prime = user.get("plan") == "prime"
+            bot_settings = await mdb.get_bot_settings()
+            category_unlocked = is_prime or not bot_settings["premium_membership"]
             current_cat = await mdb.get_user_category(uid)
 
             # Delete the file message first
@@ -172,7 +181,7 @@ async def callback_query_handler(client, query: CallbackQuery):
             except Exception:
                 pass
 
-            if is_prime:
+            if category_unlocked:
                 markup = _build_category_markup(current_cat)
                 markup.inline_keyboard.append([
                     InlineKeyboardButton("🎬 Get File", callback_data="getvideo"),
@@ -202,8 +211,10 @@ async def callback_query_handler(client, query: CallbackQuery):
             # Category button pressed — save choice and show success msg
             user = await get_cached_user_data(uid)
             is_prime = user.get("plan") == "prime"
+            bot_settings = await mdb.get_bot_settings()
+            category_unlocked = is_prime or not bot_settings["premium_membership"]
 
-            if not is_prime:
+            if not category_unlocked:
                 await query.answer("🔒 This feature is for Premium users only!", show_alert=True)
                 return
 
@@ -241,9 +252,11 @@ async def callback_query_handler(client, query: CallbackQuery):
 
             user = await get_cached_user_data(uid)
             is_prime = user.get("plan") == "prime"
+            bot_settings = await mdb.get_bot_settings()
+            category_unlocked = is_prime or not bot_settings["premium_membership"]
             current_cat = await mdb.get_user_category(uid)
 
-            if is_prime:
+            if category_unlocked:
                 markup = _build_category_markup(current_cat)
                 markup.inline_keyboard.append([
                     InlineKeyboardButton("🎬 Get File", callback_data="getvideo"),
@@ -328,6 +341,8 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
 
     user = await get_cached_user_data(user_id)
     is_prime = user.get("plan") == "prime"
+    bot_settings = await mdb.get_bot_settings()
+    category_unlocked = is_prime or not bot_settings["premium_membership"]
 
     if is_prime:
         usage_text = "🌟 User Plan : Prime"
@@ -335,10 +350,13 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
         user_data = await mdb.get_user(user_id)
         daily_count = user_data.get("daily_count", 0)
         limits = await mdb.get_global_limits()
-        usage_text = f"📊 Daily Limit : {daily_count}/{limits['free_limit']}"
+        if bot_settings["is_verify"]:
+            usage_text = f"📊 Daily Limit : {daily_count}/{limits['free_limit']}"
+        else:
+            usage_text = "📊 Access : Unlimited"
 
     cat_display = ""
-    if is_prime:
+    if category_unlocked:
         user_category = await mdb.get_user_category(user_id)
         cat_name = "All" if user_category == "all" else user_category
         cat_display = f"\n📂 Category: {cat_name}"
@@ -360,8 +378,8 @@ async def handle_previous_video(client: Client, query: CallbackQuery):
     # has_previous = True only when there's still an older entry after this one
     has_previous = current_index_in_cache is not None and current_index_in_cache + 1 < len(history_cache)
 
-    protect = PROTECT_CONTENT
-    if is_prime and PREMIUM_CAN_DOWNLOAD:
+    protect = bot_settings["protect_content"]
+    if is_prime and bot_settings["premium_can_download"]:
         protect = False
 
     # NOTE: We do NOT increment the usage counter here — going back is free.
@@ -476,7 +494,8 @@ async def handle_share_link_access(client, message, link_id: str):
     The video is sent with the full set of navigation buttons (Next/Back/Share/Category).
     """
     # Force-sub is the only gate
-    if IS_FSUB and not await get_fsub(client, message, start_param=f"share_{link_id}"):
+    bot_settings = await mdb.get_bot_settings()
+    if bot_settings["is_fsub"] and not await get_fsub(client, message, start_param=f"share_{link_id}"):
         return
 
     link_data = await mdb.async_db["share_links"].find_one({"link_id": link_id})
@@ -523,7 +542,7 @@ async def handle_share_link_access(client, message, link_id: str):
     markup = InlineKeyboardMarkup(buttons)
 
     # Respect protect content — share links are free but still honor the setting
-    protect = PROTECT_CONTENT
+    protect = bot_settings["protect_content"]
 
     try:
         kwargs = dict(caption=caption, protect_content=protect, reply_markup=markup)
