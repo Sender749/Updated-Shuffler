@@ -383,3 +383,68 @@ async def delete_video_by_id_command(client, message):
             results.append(f"❌ `{target}` — error: `{e}`")
 
     await status.edit_text("\n".join(results))
+
+
+# ==================== /settings ====================
+# Lets the admin flip core bot behavior from the bot DM (toggle buttons,
+# backed by mdb.get_bot_settings()/set_bot_setting()) instead of editing
+# vars.py / env vars and redeploying.
+
+_SETTINGS_LABELS = {
+    "is_verify":            "🔑 Verification System",
+    "protect_content":      "🛡️ Protect Content",
+    "premium_can_download": "📥 Premium Can Download",
+    "is_fsub":               "📢 Force Subscribe",
+    "premium_membership":   "💎 Premium Membership (category gate)",
+}
+# Rendered in this fixed order so the panel doesn't jump around on toggle.
+_SETTINGS_ORDER = ["is_verify", "protect_content", "premium_can_download", "is_fsub", "premium_membership"]
+
+
+def _settings_text(s: dict) -> str:
+    lines = ["⚙️ <b>Bot Settings</b>\n", "Tap a toggle below to switch it ON/OFF.\n"]
+    if not s["is_verify"]:
+        lines.append("ℹ️ Verification is OFF → the free daily-limit system is also OFF (free users get unlimited files).")
+    if not s["premium_membership"]:
+        lines.append("ℹ️ Premium Membership is OFF → every user can switch category, not just Prime users.")
+    if not s["protect_content"]:
+        lines.append("ℹ️ Protect Content is OFF → files can be forwarded/saved by anyone.")
+    return "\n".join(lines)
+
+
+def _settings_markup(s: dict) -> InlineKeyboardMarkup:
+    rows = []
+    for key in _SETTINGS_ORDER:
+        state_icon = "✅ ON" if s[key] else "❌ OFF"
+        rows.append([InlineKeyboardButton(f"{_SETTINGS_LABELS[key]} : {state_icon}", callback_data=f"stg_toggle_{key}")])
+    rows.append([InlineKeyboardButton("❌ Close", callback_data="close")])
+    return InlineKeyboardMarkup(rows)
+
+
+@Client.on_message(filters.command("settings") & filters.private)
+async def settings_command(client, message):
+    if not is_admin(message.from_user.id):
+        return
+    s = await mdb.get_bot_settings()
+    await message.reply_text(_settings_text(s), reply_markup=_settings_markup(s))
+
+
+async def handle_settings_toggle(client, query):
+    """Called from callback.py's dispatcher for callback_data starting with 'stg_toggle_'."""
+    uid = query.from_user.id
+    if not is_admin(uid):
+        await query.answer("You are not my admin ❌", show_alert=True)
+        return
+
+    key = query.data[len("stg_toggle_"):]
+    if key not in _SETTINGS_LABELS:
+        await query.answer("Unknown setting.", show_alert=True)
+        return
+
+    current = await mdb.get_bot_settings()
+    updated = await mdb.set_bot_setting(key, not current[key])
+    await query.answer(f"{_SETTINGS_LABELS[key]} is now {'ON ✅' if updated[key] else 'OFF ❌'}")
+    try:
+        await query.message.edit_text(_settings_text(updated), reply_markup=_settings_markup(updated))
+    except Exception:
+        pass
