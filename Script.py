@@ -1,15 +1,19 @@
 from vars import PREMIUM_CAN_DOWNLOAD
 
 
-def _build_pro_text(free_limit: int) -> str:
+def _build_pro_text(free_limit: int, premium_can_download: bool = None) -> str:
     """
     Build the PRO plan description dynamically.
-    The 'download without restriction' feature is only shown
-    when PREMIUM_CAN_DOWNLOAD is enabled in vars.py.
+    The 'download without restriction' feature is only shown when
+    Premium Can Download is enabled — pass the live value from
+    mdb.get_bot_settings() where available; falls back to the vars.py
+    default only if the caller doesn't have it handy.
     """
+    if premium_can_download is None:
+        premium_can_download = PREMIUM_CAN_DOWNLOAD
     download_line = (
         "» <b>Download videos without any restriction</b> (no forwarding lock).\n"
-        if PREMIUM_CAN_DOWNLOAD else ""
+        if premium_can_download else ""
     )
 
     return f"""<b><u>🆓 𝖥𝗋𝖾𝖾 𝖯𝗅𝖺𝗇</u></b>
@@ -77,6 +81,8 @@ class text(object):
 » /index — Manually index videos from database channels.
 
 » /maintenance — Toggle maintenance mode ON or OFF.
+
+» /settings — Toggle Verification, Protect Content, Premium Can Download, Force Sub, and Premium Membership from the bot DM.
 
 » /prime — Add a user to the Prime membership.
 
