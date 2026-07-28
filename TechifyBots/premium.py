@@ -20,7 +20,8 @@ async def my_plan(client, message):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support 🧑‍💻", url=f"https://t.me/{ADMIN_USERNAME}")]])
         )
         return
-    if IS_FSUB and not await get_fsub(client, message):
+    bot_settings = await mdb.get_bot_settings()
+    if bot_settings["is_fsub"] and not await get_fsub(client, message):
         return
 
     global_limits = await mdb.get_global_limits()
@@ -53,7 +54,7 @@ async def my_plan(client, message):
 
         # Build premium feature list dynamically
         prime_features = ["🌟 **Unlimited Video Access**"]
-        if PREMIUM_CAN_DOWNLOAD:
+        if bot_settings["premium_can_download"]:
             prime_features.append("📥 **Download Videos Without Restriction**")
         prime_features.append("📂 **Category Selection**")
         prime_features.append("⚡ **Priority Access**")
