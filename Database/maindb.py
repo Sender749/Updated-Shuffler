@@ -13,6 +13,9 @@ class Database:
         self.cached_limits = None
         self.cached_limits_ts = 0
         self.cached_limits_ttl = 60
+        self.cached_settings = None
+        self.cached_settings_ts = 0
+        self.cached_settings_ttl = 30
         self.async_client = AsyncIOMotorClient(
             MONGO_URI,
             maxPoolSize=20,
@@ -41,6 +44,43 @@ class Database:
     async def initialize_global_limits(self):
         if not await self.async_global_limits.find_one({}):
             await self.async_global_limits.insert_one({'free_limit': FREE_LIMIT, 'maintenance': False})
+
+    # ── BOT SETTINGS (admin-configurable toggles, see /settings) ────────────────
+    # These let the admin flip core behavior from the bot DM instead of editing
+    # vars.py / env vars and redeploying. vars.py values are only used as the
+    # initial defaults the very first time — after that the DB is authoritative.
+    _SETTINGS_DEFAULTS_KEYS = (
+        "is_verify", "protect_content", "premium_can_download",
+        "is_fsub", "premium_membership",
+    )
+
+    async def get_bot_settings(self) -> dict:
+        now = time.monotonic()
+        if self.cached_settings and (now - self.cached_settings_ts) < self.cached_settings_ttl:
+            return self.cached_settings
+        defaults = {
+            "is_verify":             IS_VERIFY,
+            "protect_content":       PROTECT_CONTENT,
+            "premium_can_download":  PREMIUM_CAN_DOWNLOAD,
+            "is_fsub":                IS_FSUB,
+            # Whether category-switching requires a Prime plan.
+            # True == old/original behavior (category switching is Premium-only).
+            "premium_membership":    True,
+        }
+        db_settings = await self.async_db["bot_settings"].find_one({}) or {}
+        self.cached_settings = {
+            **defaults,
+            **{k: v for k, v in db_settings.items() if k in self._SETTINGS_DEFAULTS_KEYS},
+        }
+        self.cached_settings_ts = now
+        return self.cached_settings
+
+    async def set_bot_setting(self, key: str, value: bool) -> dict:
+        if key not in self._SETTINGS_DEFAULTS_KEYS:
+            raise ValueError(f"Unknown setting: {key}")
+        await self.async_db["bot_settings"].update_one({}, {"$set": {key: value}}, upsert=True)
+        self.cached_settings_ts = 0  # force a fresh read next call
+        return await self.get_bot_settings()
 
     async def check_and_increment_usage(self, user_id: int):
         limits, user = await asyncio.gather(self.get_global_limits(), self.get_user(user_id))
