@@ -218,7 +218,8 @@ async def start_command(client, message):
     # always sent the user to a bare /start and their shared file was lost.
     start_data = message.command[1] if len(message.command) > 1 else None
 
-    if IS_FSUB and not await get_fsub(client, message, start_param=start_data):
+    bot_settings = await mdb.get_bot_settings()
+    if bot_settings["is_fsub"] and not await get_fsub(client, message, start_param=start_data):
         return
 
     if len(message.command) > 1:
@@ -318,11 +319,15 @@ async def category_command(client, message):
     if await udb.is_user_banned(uid):
         await message.reply("**🚫 You are banned from using this bot**")
         return
-    if IS_FSUB and not await get_fsub(client, message):
+    bot_settings = await mdb.get_bot_settings()
+    if bot_settings["is_fsub"] and not await get_fsub(client, message):
         return
 
     user = await get_cached_user_data(uid)
     is_prime = user.get("plan") == "prime"
+    # When the admin turns Premium Membership off, category switching is
+    # unlocked for everyone — it no longer gates on the user's actual plan.
+    category_unlocked = is_prime or not bot_settings["premium_membership"]
 
     if not CATEGORIES:
         await message.reply_text("📂 <b>No categories have been configured yet.</b>")
@@ -330,7 +335,7 @@ async def category_command(client, message):
 
     current_cat = await mdb.get_user_category(uid)
 
-    if is_prime:
+    if category_unlocked:
         markup = _build_category_markup(current_cat)
         markup.inline_keyboard.append([InlineKeyboardButton("❌ Close", callback_data="close")])
         await message.reply_text(
@@ -534,10 +539,11 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
                 pass
 
     # ── Checks ────────────────────────────────────────────────────────────
-    banned, limits, user = await asyncio.gather(
+    banned, limits, user, bot_settings = await asyncio.gather(
         udb.is_user_banned(uid),
         mdb.get_global_limits(),
         get_cached_user_data(uid),
+        mdb.get_bot_settings(),
     )
 
     if banned:
@@ -548,7 +554,7 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
         await _fail("**🛠️ Bot Under Maintenance — Back Soon!**")
         return
 
-    if IS_FSUB and not await get_fsub(client, message, user_id=uid):
+    if bot_settings["is_fsub"] and not await get_fsub(client, message, user_id=uid):
         stop_anim.set()
         anim_task.cancel()
         # fsub handler sends its own message; just clean up placeholder
@@ -565,11 +571,15 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
         return
 
     is_prime = user.get("plan") == "prime"
+    # When Premium Membership is off, category switching is unlocked for
+    # everyone (but this has no effect on protect-content / download rules —
+    # those stay tied to the real plan + their own dedicated toggles).
+    category_unlocked = is_prime or not bot_settings["premium_membership"]
 
     if is_prime:
         usage_text = "🌟 User Plan : Prime"
     else:
-        if IS_VERIFY:
+        if bot_settings["is_verify"]:
             verified, is_second, is_third = await get_cached_verification(uid)
             if verified and not is_second and not is_third:
                 usage_text = "**Status : ✅ Verified**"
@@ -589,20 +599,18 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
                     await show_verify(client, message, uid, is_second, is_third)
                     return
         else:
-            usage = await mdb.check_and_increment_usage(uid)
-            if not usage["allowed"]:
-                await _fail(f"**🚫 Limit reached ({usage['limit']})\n\nUpgrade to Prime!**")
-                return
-            usage_text = f"📊 Daily Limit : {usage['count']}/{usage['limit']}"
+            # Verification system is OFF → the free daily-limit system is
+            # OFF too. Free users get files without any limit or counting.
+            usage_text = "📊 Access : Unlimited"
 
     # ── get category-filtered videos ──────────────────────────────────────
-    user_category = await mdb.get_user_category(uid) if is_prime else "all"
+    user_category = await mdb.get_user_category(uid) if category_unlocked else "all"
     videos = await _get_videos_for_category(user_category)
 
     if not videos:
         cat_name = "All" if user_category == "all" else user_category
         no_file_markup = None
-        if is_prime and user_category != "all":
+        if category_unlocked and user_category != "all":
             no_file_markup = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📂 Change Category", callback_data="show_category")],
                 [InlineKeyboardButton("🌐 Switch to All", callback_data="cat_all")],
@@ -630,7 +638,7 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
     mins       = DELETE_TIMER // 60
 
     cat_display = ""
-    if is_prime:
+    if category_unlocked:
         cat_name    = "All" if user_category == "all" else user_category
         cat_display = f"\n📂 Category: {cat_name}"
 
@@ -643,8 +651,11 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
     current_history = _get_history_cache(uid)
     has_previous = len(current_history) > 0
 
-    protect = PROTECT_CONTENT
-    if is_prime and PREMIUM_CAN_DOWNLOAD:
+    # Protect Content is fully independent of the Premium Membership toggle:
+    # it's governed by its own on/off setting, with an override only for
+    # actual Prime users when Premium Can Download is enabled.
+    protect = bot_settings["protect_content"]
+    if is_prime and bot_settings["premium_can_download"]:
         protect = False
 
     buttons = _make_file_buttons(uid, has_previous)
