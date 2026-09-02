@@ -13,6 +13,7 @@ from .cmds import (
 )
 from .index import INDEX_TASKS, start_indexing
 from .link_generator import handle_lg_callback
+from .quicklink import handle_ql_callback
 from .admin import handle_settings_toggle
 import asyncio, string, random
 from datetime import datetime
@@ -32,6 +33,11 @@ async def callback_query_handler(client, query: CallbackQuery):
         # ── link-generator callbacks ──────────────────────────────────────
         if data.startswith("lg_"):
             await handle_lg_callback(client, query, data)
+            return
+
+        # ── quicklink-chain callbacks ──────────────────────────────────────
+        if data.startswith("ql_"):
+            await handle_ql_callback(client, query, data)
             return
 
         # ── /settings toggle callbacks ──────────────────────────────────────
