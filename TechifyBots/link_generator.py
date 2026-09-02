@@ -141,6 +141,26 @@ def _back_kb() -> InlineKeyboardMarkup:
     ])
 
 
+_CUSTOM_PROMPT = (
+    "📎 **Send a photo or video to use as the post thumbnail.**\n\n"
+    "Tap ❌ Cancel to cancel."
+)
+
+
+async def _enter_custom_wait_direct(client: Client, uid: int):
+    """
+    Skip the "no screenshots available" notice entirely and drop the admin
+    straight into the custom-thumbnail prompt, with a Cancel button (there is
+    nothing meaningful to go "back" to, since no screenshots exist).
+    """
+    s = LINK_SESSIONS.get(uid)
+    if not s:
+        return
+    s["pre_custom_state"] = "collecting"
+    s["state"] = "custom_wait"
+    await _edit(client, s["chat_id"], s["nav_msg_id"], _CUSTOM_PROMPT, _ask_kb())
+
+
 # ── ask-text ──────────────────────────────────────────────────────────────────
 
 def _ask_text(n: int, n_groups: int = 0) -> str:
@@ -392,10 +412,10 @@ async def _gen_ss(client: Client, uid: int, batch: int):
     n_vids  = len(videos)
 
     if n_vids == 0:
-        s["state"] = "ss_done"
-        await _edit(client, chat_id, nav_id,
-                    "⚠️ No video files detected.\n\nUse 🖼 Custom to pick a thumbnail, then 📤 Post.",
-                    _back_kb())
+        # No videos to screenshot (e.g. photos-only post) — go straight to
+        # asking for a custom thumbnail instead of showing an interstitial
+        # notice with a "Custom" button the admin has to tap separately.
+        await _enter_custom_wait_direct(client, uid)
         return
 
     ss_per_vid = math.ceil(SS_COUNT / n_vids)
@@ -460,10 +480,7 @@ async def _gen_ss(client: Client, uid: int, batch: int):
             return
 
         if not collected_paths:
-            s["state"] = "ss_done"
-            await _edit(client, chat_id, nav_id,
-                        "⚠️ Could not extract any screenshots.\n\nUse 🖼 Custom to pick a thumbnail.",
-                        _back_kb())
+            await _enter_custom_wait_direct(client, uid)
             return
 
         old_n = len(s["ss_paths"])
@@ -481,9 +498,7 @@ async def _gen_ss(client: Client, uid: int, batch: int):
     s["state"]    = "ss_done"
 
     if not s["ss_paths"]:
-        await _edit(client, chat_id, nav_id,
-                    "⚠️ Could not extract any screenshots.\n\nUse 🖼 Custom to pick a thumbnail.",
-                    _back_kb())
+        await _enter_custom_wait_direct(client, uid)
         return
 
     await _show_nav(client, uid)
@@ -568,6 +583,88 @@ def _make_input_media_for_post(fid: str, mtype: str):
         return InputMediaDocument(media=fid)
 
 
+def _media_bucket(mtype: str) -> str:
+    """
+    Telegram's sendMediaGroup only allows grouping photos+videos together,
+    or documents together, or audio together — it rejects a call that mixes
+    those categories. Bucket every file so runs of compatible types can be
+    grouped into one collage, regardless of whether Telegram happened to
+    tag them with a shared media_group_id (mixed selections — e.g. photo +
+    gif + video sent together — don't always get one).
+    """
+    if mtype in ("photo", "video", "animation"):
+        return "media"
+    if mtype == "audio":
+        return "audio"
+    return "document"   # documents, voice notes, anything else
+
+
+def _chunk(seq: list, n: int) -> list:
+    return [seq[i:i + n] for i in range(0, len(seq), n)]
+
+
+async def _post_files_as_collage(client: Client, files: list,
+                                  get_btn: InlineKeyboardMarkup, post_id: str) -> list[int]:
+    """
+    Post 2+ files to POST_CHANNEL as one or more media-group "collages",
+    preserving the order the admin sent them in. Runs of Telegram-compatible
+    types are grouped together (max 10 per album, per Bot API limits); a
+    lone file that can't be grouped (run of 1, or a >10 overflow remainder)
+    is sent as a normal single message instead, since sendMediaGroup
+    requires 2-10 items. The link button + Post ID is attached to the very
+    last message sent. Raises on failure so the caller can report it.
+    """
+    # Build ordered runs of same-bucket files, then split each run into
+    # chunks of at most 10 (Telegram's media-group cap).
+    runs: list[list[dict]] = []
+    for f in files:
+        b = _media_bucket(f["media_type"])
+        if runs and _media_bucket(runs[-1][-1]["media_type"]) == b:
+            runs[-1].append(f)
+        else:
+            runs.append([f])
+
+    chunks: list[list[dict]] = []
+    for run in runs:
+        chunks.extend(_chunk(run, 10))
+
+    posted_msg_ids: list[int] = []
+    last_msg: Optional[Message] = None
+
+    for ci, chunk in enumerate(chunks):
+        is_last_chunk = (ci == len(chunks) - 1)
+
+        if len(chunk) == 1:
+            f = chunk[0]
+            if is_last_chunk:
+                sent = await _post_single(client, f["file_id"], f["media_type"], None, get_btn, post_id=post_id)
+            else:
+                sent = await _post_single_raw(client, f["file_id"], f["media_type"])
+            if sent:
+                last_msg = sent
+                posted_msg_ids.append(sent.id)
+        else:
+            media_list = [_make_input_media_for_post(f["file_id"], f["media_type"]) for f in chunk]
+            msgs = await client.send_media_group(POST_CHANNEL, media_list)
+            if msgs:
+                last_msg = msgs[-1]
+                posted_msg_ids.extend(m.id for m in msgs)
+            if is_last_chunk and msgs:
+                btn_msg = await client.send_message(
+                    POST_CHANNEL,
+                    f">🆔 Post ID : `{post_id}`",
+                    reply_markup=get_btn,
+                    reply_to_message_id=msgs[-1].id,
+                )
+                if btn_msg:
+                    posted_msg_ids.append(btn_msg.id)
+
+        if not is_last_chunk:
+            await asyncio.sleep(0.3)
+
+    return posted_msg_ids
+
+
 async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
     s = LINK_SESSIONS.get(uid)
     if not s:
@@ -607,15 +704,6 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
     # the DB record — not just the DB record.
     posted_msg_ids: list[int] = []
 
-    # ── Determine if this is a collage post or a single/mixed post ──────
-    # A "collage post" means the entire content is one media group (all files
-    # belong to one collage group with 2+ items, no extra single files).
-    is_pure_collage = (
-        len(collage_groups) == 1
-        and len(collage_groups[0]) == len(files)
-        and len(files) >= 2
-    )
-
     # ── Choose preview / post strategy ───────────────────────────────────
     if custom:
         # Admin picked a custom thumbnail → use it as a single photo post
@@ -635,90 +723,20 @@ async def _do_post(client: Client, uid: int, custom: Optional[dict] = None):
             return
         posted_msg_ids.append(sent.id)
 
-    elif is_pure_collage:
-        # ── Send as media group (collage) with the link button on the LAST item ──
-        group_items = collage_groups[0]
-        media_list  = []
-        for idx, item in enumerate(group_items):
-            fid, mtype = item["file_id"], item["media_type"]
-            # Only the last item in the group can have a reply_markup
-            # (Telegram only supports reply_markup on the last item of a media group).
-            # We keep captions blank — sender info stripped as requested.
-            if mtype == "photo":
-                media_list.append(InputMediaPhoto(media=fid))
-            elif mtype in ("video", "animation"):
-                media_list.append(InputMediaVideo(media=fid))
-            elif mtype == "document":
-                media_list.append(InputMediaDocument(media=fid))
-            elif mtype == "audio":
-                media_list.append(InputMediaAudio(media=fid))
-            else:
-                media_list.append(InputMediaDocument(media=fid))
-
+    elif len(files) >= 2:
+        # 2+ files → always post as a collage in the channel, in the order
+        # the admin sent them, regardless of whether Telegram tagged them
+        # with a shared media_group_id (mixed selections like photo + gif +
+        # video don't always get one). Compatible runs (photo/video/anim
+        # together, documents together, audio together) are grouped into
+        # media-group albums; anything that can't be grouped is sent as a
+        # normal message so nothing is silently dropped.
         try:
-            # send_media_group does not support reply_markup per-message in older
-            # Pyrogram versions; we send the group first, then send the link button
-            # as a text reply to the last sent message.
-            sent_msgs = await client.send_media_group(POST_CHANNEL, media_list)
-            if sent_msgs:
-                posted_msg_ids.extend(m.id for m in sent_msgs)
-            # Send the Get Video button as a follow-up text message
-            if sent_msgs:
-                btn_msg = await client.send_message(
-                    POST_CHANNEL,
-                    f">🆔 Post ID : `{post_id}`",
-                    reply_markup=get_btn,
-                    reply_to_message_id=sent_msgs[-1].id,
-                )
-                if btn_msg:
-                    posted_msg_ids.append(btn_msg.id)
-        except Exception as err:
-            await _edit(client, chat_id, nav_id, f"⚠️ **Post failed.**\n\nError: `{err}`", None)
-            return
-
-    elif len(collage_groups) > 0:
-        # Mixed: multiple collage groups and/or single files.
-        # Post each collage group as a media group, then post singles,
-        # and attach the link button to the very last sent message.
-        try:
-            last_msg = None
-            # Post collage groups first
-            for grp in collage_groups:
-                media_list = [_make_input_media_for_post(f["file_id"], f["media_type"]) for f in grp]
-                msgs = await client.send_media_group(POST_CHANNEL, media_list)
-                if msgs:
-                    last_msg = msgs[-1]
-                    posted_msg_ids.extend(m.id for m in msgs)
-                await asyncio.sleep(0.3)
-
-            # Then post any standalone (non-collage) files
-            collage_fids = {f["file_id"] for grp in collage_groups for f in grp}
-            standalone   = [f for f in files if f["file_id"] not in collage_fids]
-            for f in standalone[:-1]:
-                # Send without button
-                sent = await _post_single_raw(client, f["file_id"], f["media_type"])
-                if sent:
-                    last_msg = sent
-                    posted_msg_ids.append(sent.id)
-                await asyncio.sleep(0.2)
-
-            # Last standalone file gets the link button
-            if standalone:
-                last_f = standalone[-1]
-                sent = await _post_single(client, last_f["file_id"], last_f["media_type"], None, get_btn, post_id=post_id)
-                if sent:
-                    last_msg = sent
-                    posted_msg_ids.append(sent.id)
-            elif last_msg:
-                # All files were in collages — send the link button as a reply
-                btn_msg = await client.send_message(
-                    POST_CHANNEL,
-                    f">🆔 Post ID : `{post_id}`",
-                    reply_markup=get_btn,
-                    reply_to_message_id=last_msg.id,
-                )
-                if btn_msg:
-                    posted_msg_ids.append(btn_msg.id)
+            ids = await _post_files_as_collage(client, files, get_btn, post_id)
+            posted_msg_ids.extend(ids)
+            if not ids:
+                await _edit(client, chat_id, nav_id, "⚠️ **Post failed.** Check bot logs / POST_CHANNEL permissions.", None)
+                return
         except Exception as err:
             await _edit(client, chat_id, nav_id, f"⚠️ **Post failed.**\n\nError: `{err}`", None)
             return
