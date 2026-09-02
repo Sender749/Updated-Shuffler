@@ -237,6 +237,10 @@ async def start_command(client, message):
             from .callback import handle_share_link_access
             await handle_share_link_access(client, message, link_id)
             return
+        elif data.startswith("ql_"):
+            from .quicklink import handle_ql_start
+            await handle_ql_start(client, message, data)
+            return
 
     user_check = udb.get_user(uid)
     if not await user_check:
