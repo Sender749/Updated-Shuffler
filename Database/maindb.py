@@ -26,8 +26,10 @@ class Database:
         self.async_user_collection = self.async_db["users"]
         self.async_limits_collection = self.async_db["limits"]
         self.async_global_limits = self.async_db["global_limits"]
+        self.async_r2_usage = self.async_db["r2_usage"]
         asyncio.create_task(self.check_and_reset_daily_counts())
         asyncio.create_task(self.check_premium_expire())
+        asyncio.create_task(self.check_r2_usage_alert())
 
     # ── LIMITS ────────────────────────────────────────────────────────────────
 
@@ -51,7 +53,7 @@ class Database:
     # initial defaults the very first time — after that the DB is authoritative.
     _SETTINGS_DEFAULTS_KEYS = (
         "is_verify", "protect_content", "premium_can_download",
-        "is_fsub", "premium_membership",
+        "is_fsub", "premium_membership", "webapp_enabled",
     )
 
     async def get_bot_settings(self) -> dict:
@@ -66,6 +68,10 @@ class Database:
             # Whether category-switching requires a Prime plan.
             # True == old/original behavior (category switching is Premium-only).
             "premium_membership":    True,
+            # Admin kill-switch for the Reels WebApp (see /settings). When False,
+            # the WebApp shows users a "temporarily unavailable" popup instead of
+            # the feed, without removing the button (see webapp_api.py).
+            "webapp_enabled":        True,
         }
         db_settings = await self.async_db["bot_settings"].find_one({}) or {}
         self.cached_settings = {
@@ -343,6 +349,101 @@ class Database:
                 {"source_channel_id": {"$in": channel_ids}}
             )
         ]
+
+    # ── REELS WEBAPP / R2 USAGE ──────────────────────────────────────────────
+    # We never call Cloudflare's own usage API (no extra credentials needed) —
+    # since we're the only writer to the bucket, we just keep a running total
+    # of bytes we've uploaded in a single-doc collection and alert off that.
+
+    async def get_r2_usage(self) -> dict:
+        doc = await self.async_r2_usage.find_one({"_id": "usage"})
+        return {
+            "total_bytes": (doc or {}).get("total_bytes", 0),
+            "alert_sent": (doc or {}).get("alert_sent", False),
+        }
+
+    async def add_r2_usage_bytes(self, delta: int):
+        """Adjust the tracked usage total (positive on upload, negative on delete)."""
+        await self.async_r2_usage.update_one(
+            {"_id": "usage"}, {"$inc": {"total_bytes": delta}}, upsert=True
+        )
+
+    async def set_r2_alert_sent(self, sent: bool):
+        await self.async_r2_usage.update_one(
+            {"_id": "usage"}, {"$set": {"alert_sent": sent}}, upsert=True
+        )
+
+    async def check_r2_usage_alert(self):
+        """Background loop: DM all admins once tracked R2 usage crosses the
+        configured free-tier alert threshold, so they can flip the WebApp off
+        via /settings before anything would go beyond the free plan. Resets
+        itself (so it can fire again) once usage drops back under threshold —
+        e.g. after old reels are deleted."""
+        from vars import R2_ENABLED, R2_FREE_STORAGE_GB, R2_ALERT_THRESHOLD_PERCENT, ADMIN_IDS
+        if not R2_ENABLED:
+            return
+        limit_bytes = R2_FREE_STORAGE_GB * (1024 ** 3)
+        for _ in count():
+            try:
+                usage = await self.get_r2_usage()
+                percent = (usage["total_bytes"] / limit_bytes) * 100 if limit_bytes else 0
+                if percent >= R2_ALERT_THRESHOLD_PERCENT and not usage["alert_sent"]:
+                    used_gb = usage["total_bytes"] / (1024 ** 3)
+                    msg = (
+                        "⚠️ **Reels WebApp — R2 Storage Alert**\n\n"
+                        f"Usage: **{used_gb:.2f} GB** / {R2_FREE_STORAGE_GB:.0f} GB free tier "
+                        f"(**{percent:.1f}%**)\n\n"
+                        "You're approaching Cloudflare R2's free storage limit. "
+                        "Going over means paid usage starts.\n\n"
+                        "Use /settings → 🎥 Reels WebApp to turn it OFF, or delete some "
+                        "older reels to free up space."
+                    )
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await bot.send_message(admin_id, msg)
+                        except Exception as e:
+                            print(f"[check_r2_usage_alert] failed to notify admin {admin_id}: {e}")
+                    await self.set_r2_alert_sent(True)
+                elif percent < R2_ALERT_THRESHOLD_PERCENT and usage["alert_sent"]:
+                    await self.set_r2_alert_sent(False)
+            except Exception as e:
+                print(f"[check_r2_usage_alert] error: {e}")
+            await asyncio.sleep(1800)  # check every 30 minutes
+
+    # ── REELS FEED ────────────────────────────────────────────────────────────
+
+    async def get_reels_feed(self, after_id: str = None, limit: int = 10) -> list:
+        """
+        Return up to `limit` reels-eligible videos (mirrored to R2), newest
+        first, paginated with an ObjectId cursor (`after_id` = last _id the
+        client already has).
+        """
+        from bson import ObjectId
+        query = {"reels_eligible": True}
+        if after_id:
+            try:
+                query["_id"] = {"$lt": ObjectId(after_id)}
+            except Exception:
+                pass
+        cursor = self.async_video_collection.find(query).sort("_id", -1).limit(limit)
+        return [v async for v in cursor]
+
+    async def mark_reels_eligible(self, video_id: int, source_channel_id, r2_key: str, r2_size: int):
+        await self.async_video_collection.update_one(
+            {"video_id": video_id, "source_channel_id": source_channel_id},
+            {"$set": {"reels_eligible": True, "r2_key": r2_key, "r2_size": r2_size}},
+        )
+        await self.add_r2_usage_bytes(r2_size)
+
+    async def get_reels_eligible_pending(self, max_duration: int, batch_size: int = 25) -> list:
+        """Existing indexed videos that qualify for reels but haven't been
+        mirrored to R2 yet — used by the one-time /mirrorexisting backfill."""
+        cursor = self.async_video_collection.find({
+            "media_type": "video",
+            "duration": {"$gt": 0, "$lte": max_duration},
+            "reels_eligible": {"$ne": True},
+        }).limit(batch_size)
+        return [v async for v in cursor]
 
 
 def format_remaining_time(expiry):
