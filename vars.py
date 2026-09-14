@@ -77,19 +77,19 @@ PREMIUM_CAN_DOWNLOAD: bool = os.getenv("PREMIUM_CAN_DOWNLOAD", "True").lower() =
 # ── Reels WebApp / Cloudflare R2 ─────────────────────────────────────────────
 # All of these are optional — if the R2_* credentials are missing, the whole
 # feature quietly disables itself (no WebApp button, no mirroring, no crashes).
-R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "")
-R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "")
-R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
-R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "")
+R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "444fb8381f5432bc3ae6a0123b53e4d4")
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "01b8738c4439fd941efcd5657e37bc4d")
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "4788cb01f879a15daf0d6d8d8e410394a1b0610c1ea98a74b1358bc79d9f576b")
+R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "reels-videos")
 # Public base URL videos are served from — your R2 public bucket domain or a
 # Cloudflare Worker in front of it, e.g. "https://reels-cdn.yourdomain.com"
-R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL", "").rstrip("/")
+R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL", "https://pub-babd88c1825d4f4c9bb30bcf13f8aa62.r2.dev").rstrip("/")
 R2_ENABLED: bool = bool(R2_ACCOUNT_ID and R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY and R2_BUCKET_NAME)
 
 # Public URL this bot's own web server (bot.py's aiohttp app) is reachable at,
 # e.g. your Koyeb service URL "https://your-app.koyeb.app". Used to build the
 # WebApp button and to serve the reels feed API + static WebApp files.
-WEBAPP_URL = os.getenv("WEBAPP_URL", "").rstrip("/")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://comparable-noni-naha-cbe8eb81.koyeb.app/").rstrip("/")
 
 # Only videos at or under this length (seconds) get mirrored to R2 for the
 # reels feed — longer videos stay DM-only. This is the main lever for keeping
