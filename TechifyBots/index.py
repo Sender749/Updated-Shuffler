@@ -1,13 +1,58 @@
 from pyrogram import Client, filters
-from vars import DATABASE_CHANNEL_ID, ADMIN_IDS, ADMIN_ID
+from vars import DATABASE_CHANNEL_ID, ADMIN_IDS, ADMIN_ID, R2_ENABLED, REELS_MAX_DURATION
 from Database.maindb import mdb
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-import asyncio
+import asyncio, os, tempfile
 from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired, UsernameNotOccupied
 from datetime import datetime
 from pyrogram.filters import create
+from . import r2_uploader
 
 INDEX_TASKS = {}
+
+# ==================== REELS WEBAPP MIRRORING ====================
+# Runs as a background task per eligible video so it never slows down or
+# blocks the indexing loop (real-time or bulk backfill). Bounded by a
+# semaphore so we don't fire dozens of concurrent downloads/uploads during a
+# big backfill and get flood-waited by Telegram or rate-limited by R2.
+_MIRROR_SEMAPHORE = asyncio.Semaphore(3)
+
+
+async def mirror_to_r2_if_eligible(client: Client, msg: Message, media_type: str, duration: int):
+    """If R2 is configured and this video is short enough for reels, download
+    it once via the bot and upload it to R2, then record it as reels-eligible.
+    Any failure here is swallowed — it must never break indexing, and a video
+    that fails to mirror simply stays DM-only (and un-flagged, so it can be
+    retried later via /mirrorexisting)."""
+    if not R2_ENABLED or media_type != "video":
+        return
+    if duration <= 0 or duration > REELS_MAX_DURATION:
+        return
+
+    async with _MIRROR_SEMAPHORE:
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
+            os.close(fd)
+            downloaded = await client.download_media(msg, file_name=tmp_path)
+            if not downloaded:
+                return
+            key = f"reels/{msg.chat.id}_{msg.id}.mp4"
+            size = await r2_uploader.upload_file(tmp_path, key)
+            if size < 0:
+                return
+            await mdb.mark_reels_eligible(
+                video_id=msg.id, source_channel_id=msg.chat.id,
+                r2_key=key, r2_size=size,
+            )
+        except Exception as e:
+            print(f"[mirror_to_r2_if_eligible] error for msg {getattr(msg, 'id', '?')}: {e}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
 # ── helper: always returns ADMIN_IDS list ────────────────────────────────────
 def _admin_list():
@@ -67,7 +112,7 @@ def _extract_media(msg: Message):
     return None, None, 0
 
 
-async def save_media(msg: Message, source_channel_id: int = None) -> bool:
+async def save_media(msg: Message, source_channel_id: int = None, client: Client = None) -> bool:
     """
     Save any media type to the DB. Returns True if newly saved, False if duplicate/no-media.
     Always stores source_channel_id so category filtering works.
@@ -98,7 +143,10 @@ async def save_media(msg: Message, source_channel_id: int = None) -> bool:
             {"$setOnInsert": doc},
             upsert=True,
         )
-        return result.upserted_id is not None  # True = newly inserted
+        is_new = result.upserted_id is not None
+        if is_new and media_type == "video" and client is not None:
+            asyncio.create_task(mirror_to_r2_if_eligible(client, msg, media_type, duration))
+        return is_new  # True = newly inserted
     except Exception as e:
         err_str = str(e)
         # If it's a dup key on the OLD (video_id, channel_id) index,
@@ -131,11 +179,11 @@ async def save_media(msg: Message, source_channel_id: int = None) -> bool:
 async def auto_index(client: Client, message: Message):
     """Auto-index from all database channels"""
     try:
-        await save_media(message, source_channel_id=message.chat.id)
+        await save_media(message, source_channel_id=message.chat.id, client=client)
     except FloodWait as e:
         await asyncio.sleep(e.value)
         try:
-            await save_media(message, source_channel_id=message.chat.id)
+            await save_media(message, source_channel_id=message.chat.id, client=client)
         except Exception as ex:
             print(f"[auto_index] retry error: {ex}")
     except Exception as e:
@@ -318,7 +366,7 @@ async def start_indexing(client: Client, user_id: int):
         consecutive_missing = 0
 
         try:
-            result = await save_media(msg, source_channel_id=channel_id)
+            result = await save_media(msg, source_channel_id=channel_id, client=client)
             if result:
                 saved += 1
             else:
@@ -367,3 +415,54 @@ async def start_indexing(client: Client, user_id: int):
         pass
 
     INDEX_TASKS.pop(user_id, None)
+
+
+# ==================== REELS BACKFILL (one-time, for pre-existing videos) ====================
+
+@Client.on_message(filters.command("mirrorexisting") & filters.private)
+async def mirror_existing_command(client: Client, message: Message):
+    """Admin-only: mirror already-indexed videos (indexed before the Reels
+    WebApp feature existed) to R2 so they show up in the feed too. Safe to
+    run repeatedly — already-mirrored videos are skipped automatically."""
+    if message.from_user.id not in _admin_list():
+        await message.reply_text("**🚫 You're not authorized to use this command.**")
+        return
+    if not R2_ENABLED:
+        await message.reply_text("❌ R2 isn't configured (missing R2_* env vars) — nothing to backfill.")
+        return
+
+    status = await message.reply_text("⏳ Scanning for reels-eligible videos not yet mirrored...")
+    total_mirrored = 0
+    stuck_batches = 0
+    while True:
+        batch = await mdb.get_reels_eligible_pending(REELS_MAX_DURATION, batch_size=25)
+        if not batch:
+            break
+        mirrored_before = total_mirrored
+        for doc in batch:
+            try:
+                msg = await client.get_messages(doc["source_channel_id"], doc["video_id"])
+                if msg and not msg.empty and msg.video:
+                    await mirror_to_r2_if_eligible(client, msg, "video", doc.get("duration", 0))
+                    total_mirrored += 1
+            except FloodWait as e:
+                await asyncio.sleep(e.value + 1)
+            except Exception as e:
+                print(f"[mirrorexisting] error on video_id={doc.get('video_id')}: {e}")
+        try:
+            await status.edit_text(f"⏳ Mirrored **{total_mirrored}** so far...")
+        except Exception:
+            pass
+        if total_mirrored == mirrored_before:
+            stuck_batches += 1
+            if stuck_batches >= 3:
+                await status.edit_text(
+                    f"⚠️ **Backfill stopped.** Mirrored **{total_mirrored}**, but the remaining "
+                    f"videos keep failing to mirror (check logs / R2 credentials)."
+                )
+                return
+        else:
+            stuck_batches = 0
+        await asyncio.sleep(0.5)  # let the semaphore-bound mirror tasks drain a bit
+
+    await status.edit_text(f"✅ **Backfill complete.** Mirrored **{total_mirrored}** video(s) to R2.")
