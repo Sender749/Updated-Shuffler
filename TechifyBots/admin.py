@@ -87,6 +87,20 @@ async def stats_command(client, message):
     STATS += f"**⏱ Bot Uptime:** `{uptime}`\n"
     STATS += f"\n**📡 Channel Breakdown:**\n{channel_block}"
 
+    from vars import R2_ENABLED, R2_FREE_STORAGE_GB
+    bot_settings_now = await mdb.get_bot_settings()
+    if R2_ENABLED:
+        usage = await mdb.get_r2_usage()
+        used_gb = usage["total_bytes"] / (1024 ** 3)
+        percent = (used_gb / R2_FREE_STORAGE_GB * 100) if R2_FREE_STORAGE_GB else 0
+        state = "✅ ON" if bot_settings_now["webapp_enabled"] else "❌ OFF"
+        STATS += (
+            f"\n\n**🎥 Reels WebApp:** {state}\n"
+            f"**☁️ R2 Storage:** `{used_gb:.2f} GB / {R2_FREE_STORAGE_GB:.0f} GB` (`{percent:.1f}%` of free tier)"
+        )
+    else:
+        STATS += "\n\n**🎥 Reels WebApp:** Not configured (missing R2_* env vars)"
+
     await loading.edit_text(STATS)
 
 
@@ -396,9 +410,10 @@ _SETTINGS_LABELS = {
     "premium_can_download": "📥 Premium Can Download",
     "is_fsub":               "📢 Force Subscribe",
     "premium_membership":   "💎 Premium Membership (category gate)",
+    "webapp_enabled":       "🎥 Reels WebApp",
 }
 # Rendered in this fixed order so the panel doesn't jump around on toggle.
-_SETTINGS_ORDER = ["is_verify", "protect_content", "premium_can_download", "is_fsub", "premium_membership"]
+_SETTINGS_ORDER = ["is_verify", "protect_content", "premium_can_download", "is_fsub", "premium_membership", "webapp_enabled"]
 
 
 def _settings_text(s: dict) -> str:
@@ -409,6 +424,9 @@ def _settings_text(s: dict) -> str:
         lines.append("ℹ️ Premium Membership is OFF → every user can switch category, not just Prime users.")
     if not s["protect_content"]:
         lines.append("ℹ️ Protect Content is OFF → files can be forwarded/saved by anyone.")
+    if not s["webapp_enabled"]:
+        lines.append("ℹ️ Reels WebApp is OFF → the WebApp button stays visible to users, "
+                      "but it shows a \"temporarily unavailable\" popup instead of the feed.")
     return "\n".join(lines)
 
 
