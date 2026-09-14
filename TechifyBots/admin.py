@@ -202,6 +202,47 @@ async def maintenance_mode(client: Client, message: Message):
         await message.reply_text(f"Error: {str(e)}")
 
 
+@Client.on_message(filters.command("r2check") & filters.private)
+async def r2check_command(client: Client, message: Message):
+    """Admin-only: quick read+write test against your R2 bucket, so you can
+    tell whether it's a credentials/permission problem without digging
+    through Koyeb logs."""
+    if not is_admin(message.from_user.id):
+        return
+    from vars import R2_ENABLED, R2_ACCOUNT_ID, R2_BUCKET_NAME
+    from TechifyBots import r2_uploader
+
+    if not R2_ENABLED:
+        await message.reply_text(
+            "❌ R2 isn't configured — one or more of R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, "
+            "R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME is missing."
+        )
+        return
+
+    status = await message.reply_text("⏳ Testing R2 connection (read + write)...")
+    ok, detail = await r2_uploader.test_connection()
+    if ok:
+        await status.edit_text(
+            f"✅ **R2 connection OK.**\nAccount: `{R2_ACCOUNT_ID}`\nBucket: `{R2_BUCKET_NAME}`\n{detail}"
+        )
+        return
+
+    hint = ""
+    if "AccessDenied" in detail:
+        hint = (
+            "\n\n**Likely causes:**\n"
+            "• API token permission isn't \"Object Read & Write\" (Read-only won't allow uploads)\n"
+            "• The token is scoped to a *different* bucket than R2_BUCKET_NAME\n"
+            "• R2_BUCKET_NAME doesn't exactly match the bucket name in Cloudflare (case-sensitive)\n"
+            "• R2_ACCOUNT_ID is from a different Cloudflare account than the token"
+        )
+    elif "NoSuchBucket" in detail:
+        hint = "\n\n**Likely cause:** R2_BUCKET_NAME doesn't match any bucket in this account — check for typos."
+    await status.edit_text(
+        f"❌ **R2 connection failed.**\nAccount: `{R2_ACCOUNT_ID}`\nBucket: `{R2_BUCKET_NAME}`\n\n`{detail}`{hint}"
+    )
+
+
 @Client.on_message(filters.command("unban") & filters.private)
 async def unban_user_cmd(client: Client, message: Message):
     if not is_admin(message.from_user.id):
