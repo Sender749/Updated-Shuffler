@@ -437,11 +437,15 @@ class Database:
 
     async def get_reels_eligible_pending(self, max_duration: int, batch_size: int = 25) -> list:
         """Existing indexed videos that qualify for reels but haven't been
-        mirrored to R2 yet — used by the one-time /mirrorexisting backfill."""
+        mirrored to R2 yet — used by the one-time /mirrorexisting backfill.
+        Excludes legacy docs indexed before multi-channel support (no valid
+        source_channel_id) — those need /fix_index first, not this."""
         cursor = self.async_video_collection.find({
             "media_type": "video",
             "duration": {"$gt": 0, "$lte": max_duration},
             "reels_eligible": {"$ne": True},
+            "source_channel_id": {"$exists": True, "$ne": None},
+            "video_id": {"$exists": True, "$ne": None},
         }).limit(batch_size)
         return [v async for v in cursor]
 
