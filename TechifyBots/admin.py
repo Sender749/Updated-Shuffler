@@ -228,7 +228,7 @@ async def r2check_command(client: Client, message: Message):
         return
 
     hint = ""
-    if "AccessDenied" in detail:
+    if "AccessDenied" in detail or "403" in detail:
         hint = (
             "\n\n**Likely causes:**\n"
             "• API token permission isn't \"Object Read & Write\" (Read-only won't allow uploads)\n"
