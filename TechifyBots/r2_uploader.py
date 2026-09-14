@@ -68,3 +68,23 @@ async def delete_file(key: str) -> bool:
     except Exception as e:
         print(f"[r2_uploader] delete failed for key={key}: {e}")
         return False
+
+
+async def test_connection() -> tuple:
+    """Lightweight credential/permission check for /r2check.
+    Returns (ok: bool, detail: str)."""
+    if not R2_ENABLED:
+        return False, "R2_* env vars are missing — feature is disabled."
+    try:
+        async with _client_ctx() as s3:
+            await s3.head_bucket(Bucket=R2_BUCKET_NAME)
+            # head_bucket only proves the bucket is reachable/readable — try a
+            # tiny write too, since PutObject is what actually failed for you.
+            test_key = "_r2check_test.txt"
+            await s3.put_object(Bucket=R2_BUCKET_NAME, Key=test_key, Body=b"ok")
+            await s3.delete_object(Bucket=R2_BUCKET_NAME, Key=test_key)
+        return True, "Read + write both succeeded."
+    except Exception as e:
+        code = getattr(getattr(e, "response", {}), "get", lambda *_: {})("Error", {}).get("Code", "") \
+            if hasattr(e, "response") else ""
+        return False, f"{code or type(e).__name__}: {e}"
