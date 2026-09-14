@@ -440,15 +440,19 @@ async def mirror_existing_command(client: Client, message: Message):
             break
         mirrored_before = total_mirrored
         for doc in batch:
+            src_channel = doc.get("source_channel_id")
+            vid_id = doc.get("video_id")
+            if src_channel is None or vid_id is None:
+                continue  # legacy doc — needs /fix_index, not this
             try:
-                msg = await client.get_messages(doc["source_channel_id"], doc["video_id"])
+                msg = await client.get_messages(src_channel, vid_id)
                 if msg and not msg.empty and msg.video:
                     await mirror_to_r2_if_eligible(client, msg, "video", doc.get("duration", 0))
                     total_mirrored += 1
             except FloodWait as e:
                 await asyncio.sleep(e.value + 1)
             except Exception as e:
-                print(f"[mirrorexisting] error on video_id={doc.get('video_id')}: {e}")
+                print(f"[mirrorexisting] error on video_id={vid_id}: {e}")
         try:
             await status.edit_text(f"⏳ Mirrored **{total_mirrored}** so far...")
         except Exception:
