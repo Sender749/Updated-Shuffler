@@ -1,5 +1,5 @@
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaVideo
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaVideo, WebAppInfo
 from vars import *
 from Database.maindb import mdb
 from Database.userdb import udb
@@ -249,13 +249,23 @@ async def start_command(client, message):
     await message.reply_photo(
         photo=random.choice(PICS),
         caption=text.START.format(message.from_user.mention),
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎬 Get Video", callback_data="getvideo")],
-            [InlineKeyboardButton("🍿 𝖡𝗎𝗒 𝖲𝗎𝖻𝗌𝖼𝗋𝗂𝗉𝗍𝗂𝗈𝗇 🍾", callback_data="pro")],
-            [InlineKeyboardButton("ℹ️ Disclaimer", callback_data="about"),
-             InlineKeyboardButton("📚 Help", callback_data="help")]
-        ])
+        reply_markup=InlineKeyboardMarkup(_start_menu_rows())
     )
+
+
+def _start_menu_rows() -> list:
+    """Rows for the /start menu. The Reels WebApp button is shown whenever
+    R2/WebApp are configured at all — it stays visible even when the admin
+    has toggled it OFF, since opening it is what shows the user the
+    "temporarily unavailable" popup (see webapp/app.js). This way the
+    feature never looks like it vanished, just temporarily down."""
+    rows = [[InlineKeyboardButton("🎬 Get Video", callback_data="getvideo")]]
+    if R2_ENABLED and WEBAPP_URL:
+        rows.append([InlineKeyboardButton("📱 Watch Reels", web_app=WebAppInfo(url=f"{WEBAPP_URL}/webapp"))])
+    rows.append([InlineKeyboardButton("🍿 𝖡𝗎𝗒 𝖲𝗎𝖻𝗌𝖼𝗋𝗂𝗉𝗍𝗂𝗈𝗇 🍾", callback_data="pro")])
+    rows.append([InlineKeyboardButton("ℹ️ Disclaimer", callback_data="about"),
+                 InlineKeyboardButton("📚 Help", callback_data="help")])
+    return rows
 
 
 async def handle_verify(client, message, data):
