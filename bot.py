@@ -13,6 +13,13 @@ async def root_route(request):
     return web.Response(text="<h3 align='center'><b>I am Alive</b></h3>", content_type='text/html')
 
 async def web_server():
+    # Imported lazily (not at module top) because webapp_api -> Database.maindb
+    # -> "from bot import bot", which would otherwise be a circular import at
+    # module-load time. By the time web_server() actually runs (from
+    # Bot.start(), after this module has fully finished loading), that import
+    # resolves fine.
+    from TechifyBots.webapp_api import register_webapp_routes
+    register_webapp_routes(routes)
     app = web.Application(client_max_size=30_000_000)
     app.add_routes(routes)
     return app
