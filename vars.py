@@ -74,3 +74,32 @@ CATEGORY_BUTTONS_PER_ROW: int = 2
 PREMIUM_CAN_DOWNLOAD: bool = os.getenv("PREMIUM_CAN_DOWNLOAD", "True").lower() == "true"
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Reels WebApp / Cloudflare R2 ─────────────────────────────────────────────
+# All of these are optional — if the R2_* credentials are missing, the whole
+# feature quietly disables itself (no WebApp button, no mirroring, no crashes).
+R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "")
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "")
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
+R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "")
+# Public base URL videos are served from — your R2 public bucket domain or a
+# Cloudflare Worker in front of it, e.g. "https://reels-cdn.yourdomain.com"
+R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL", "").rstrip("/")
+R2_ENABLED: bool = bool(R2_ACCOUNT_ID and R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY and R2_BUCKET_NAME)
+
+# Public URL this bot's own web server (bot.py's aiohttp app) is reachable at,
+# e.g. your Koyeb service URL "https://your-app.koyeb.app". Used to build the
+# WebApp button and to serve the reels feed API + static WebApp files.
+WEBAPP_URL = os.getenv("WEBAPP_URL", "").rstrip("/")
+
+# Only videos at or under this length (seconds) get mirrored to R2 for the
+# reels feed — longer videos stay DM-only. This is the main lever for keeping
+# R2 storage usage (and therefore cost) predictable.
+REELS_MAX_DURATION = int(os.getenv("REELS_MAX_DURATION", "90"))
+
+# R2's free tier is 10GB storage with zero egress fees. We track our own
+# cumulative upload size (see Database/maindb.py) and alert the admins in DM
+# once usage crosses this percentage, so they can flip the WebApp off before
+# any paid usage is incurred.
+R2_FREE_STORAGE_GB = float(os.getenv("R2_FREE_STORAGE_GB", "10"))
+R2_ALERT_THRESHOLD_PERCENT = float(os.getenv("R2_ALERT_THRESHOLD_PERCENT", "85"))
+# ─────────────────────────────────────────────────────────────────────────────
