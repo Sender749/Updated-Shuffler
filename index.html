@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+<title>Reels</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="/webapp/static/style.css" />
+</head>
+<body>
+  <div id="feed" class="feed"></div>
+
+  <div id="loading" class="overlay">
+    <div class="spinner"></div>
+  </div>
+
+  <div id="unavailable" class="overlay hidden">
+    <div class="popup">
+      <div class="popup-icon">⚠️</div>
+      <div class="popup-title">Temporary Problem</div>
+      <div class="popup-text" id="unavailable-text">
+        We're experiencing a temporary issue loading reels. Please check back in a bit!
+      </div>
+      <button id="retry-btn" class="popup-btn">Retry</button>
+    </div>
+  </div>
+
+  <script src="/webapp/static/app.js"></script>
+</body>
+</html>
