@@ -81,6 +81,7 @@ R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "444fb8381f5432bc3ae6a0123b53e4d4")
 R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "01b8738c4439fd941efcd5657e37bc4d")
 R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "4788cb01f879a15daf0d6d8d8e410394a1b0610c1ea98a74b1358bc79d9f576b")
 R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "reels-videos")
+R2_JURISDICTION = os.getenv("R2_JURISDICTION", "us").strip().lower()
 # Public base URL videos are served from — your R2 public bucket domain or a
 # Cloudflare Worker in front of it, e.g. "https://reels-cdn.yourdomain.com"
 R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL", "https://pub-babd88c1825d4f4c9bb30bcf13f8aa62.r2.dev").rstrip("/")
