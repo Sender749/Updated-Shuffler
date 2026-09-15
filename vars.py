@@ -97,6 +97,13 @@ WEBAPP_URL = os.getenv("WEBAPP_URL", "https://comparable-noni-naha-cbe8eb81.koye
 # R2 storage usage (and therefore cost) predictable.
 REELS_MAX_DURATION = int(os.getenv("REELS_MAX_DURATION", "90"))
 
+# Videos taller than this (pixels) or with a higher bitrate than this get
+# downscaled/re-encoded before mirroring, so playback doesn't stall on a
+# typical phone connection. Videos already under both stay untouched (just
+# faststart-remuxed) — no quality loss, no re-encode time wasted.
+REELS_MAX_HEIGHT = int(os.getenv("REELS_MAX_HEIGHT", "720"))
+REELS_TARGET_BITRATE_KBPS = int(os.getenv("REELS_TARGET_BITRATE_KBPS", "1500"))
+
 # R2's free tier is 10GB storage with zero egress fees. We track our own
 # cumulative upload size (see Database/maindb.py) and alert the admins in DM
 # once usage crosses this percentage, so they can flip the WebApp off before
