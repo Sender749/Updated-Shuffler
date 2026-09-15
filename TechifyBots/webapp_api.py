@@ -1,15 +1,19 @@
 """
-aiohttp routes for the Reels WebApp: a JSON status endpoint (admin on/off
-switch), a paginated feed endpoint, and the static WebApp files themselves.
-All registered onto bot.py's existing aiohttp RouteTableDef, so this reuses
-the same web server (and same $PORT) that's already running for health
-checks — no separate service, no extra Koyeb resources needed.
+aiohttp routes for the Reels WebApp: status, paginated feed, like-toggling,
+and the static WebApp files themselves. All registered onto bot.py's existing
+aiohttp RouteTableDef, so this reuses the same web server (and same $PORT)
+that's already running for health checks — no separate service needed.
 """
 
+import hashlib
+import hmac
+import json
 import os
+import urllib.parse
+
 from aiohttp import web
 from Database.maindb import mdb
-from vars import R2_PUBLIC_BASE_URL, R2_ENABLED
+from vars import R2_PUBLIC_BASE_URL, R2_ENABLED, BOT_TOKEN
 
 WEBAPP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "webapp")
 WEBAPP_ASSETS_DIR = os.path.join(WEBAPP_DIR, "static")
@@ -18,6 +22,37 @@ WEBAPP_INDEX_FILE = os.path.join(WEBAPP_DIR, "index.html")
 _UNAVAILABLE_MESSAGE = (
     "We're experiencing a temporary issue loading reels. Please check back in a bit!"
 )
+
+
+def _verify_init_data(init_data: str):
+    """
+    Validate Telegram WebApp initData per Telegram's documented algorithm
+    (https://core.telegram.org/bots/webapps#validating-data-received-via-the-web-app)
+    and return the authenticated user dict, or None if missing/invalid.
+
+    This matters for likes specifically: without verifying the HMAC, anyone
+    could send a fake user id in a request and inflate/fake likes for any
+    video. The check just confirms "this really came from Telegram, for this
+    bot, for this user" — nothing here is sensitive to expose client-side.
+    """
+    if not init_data or not BOT_TOKEN:
+        return None
+    try:
+        pairs = dict(urllib.parse.parse_qsl(init_data, strict_parsing=True))
+        received_hash = pairs.pop("hash", None)
+        if not received_hash:
+            return None
+        data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
+        secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+        computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(computed_hash, received_hash):
+            return None
+        user_raw = pairs.get("user")
+        if not user_raw:
+            return None
+        return json.loads(user_raw)
+    except Exception:
+        return None
 
 
 async def _index_handler(request: web.Request) -> web.Response:
@@ -48,13 +83,21 @@ async def _feed_handler(request: web.Request) -> web.Response:
     except ValueError:
         limit = 10
 
+    user = _verify_init_data(request.query.get("init_data", ""))
+    user_id = user.get("id") if user else None
+
     docs = await mdb.get_reels_feed(after_id=after_id, limit=limit)
+    doc_ids = [str(doc["_id"]) for doc in docs if doc.get("r2_key")]
+    liked_ids = await mdb.get_liked_video_ids(user_id, doc_ids) if user_id else set()
+
     items = [
         {
             "id": str(doc["_id"]),
             "url": f"{R2_PUBLIC_BASE_URL}/{doc['r2_key']}",
             "poster": f"{R2_PUBLIC_BASE_URL}/{doc['poster_key']}" if doc.get("poster_key") else None,
             "duration": doc.get("duration", 0),
+            "likes": doc.get("likes_count", 0),
+            "liked": str(doc["_id"]) in liked_ids,
         }
         for doc in docs
         if doc.get("r2_key")
@@ -63,10 +106,36 @@ async def _feed_handler(request: web.Request) -> web.Response:
     return web.json_response({"enabled": True, "items": items, "next": next_cursor})
 
 
+async def _like_handler(request: web.Request) -> web.Response:
+    settings = await mdb.get_bot_settings()
+    if not settings.get("webapp_enabled", True) or not R2_ENABLED:
+        return web.json_response({"error": "unavailable"}, status=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad_request"}, status=400)
+
+    video_id = body.get("video_id")
+    user = _verify_init_data(body.get("init_data", ""))
+    if not video_id or not user:
+        # No verified Telegram user = we can't safely attribute a like to
+        # anyone, so we just decline rather than guessing/allowing spoofed IDs.
+        return web.json_response({"error": "auth_required"}, status=401)
+
+    try:
+        result = await mdb.toggle_like(video_id, user["id"])
+    except Exception:
+        return web.json_response({"error": "invalid_video"}, status=400)
+
+    return web.json_response(result)
+
+
 def register_webapp_routes(routes: web.RouteTableDef) -> None:
     """Call once from bot.py before `app.add_routes(routes)`."""
     routes.get("/webapp/api/status")(_status_handler)
     routes.get("/webapp/api/feed")(_feed_handler)
+    routes.post("/webapp/api/like")(_like_handler)
     routes.get("/webapp")(_index_handler)
     routes.get("/webapp/")(_index_handler)
     if os.path.isdir(WEBAPP_ASSETS_DIR):
