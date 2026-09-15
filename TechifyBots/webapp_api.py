@@ -53,6 +53,7 @@ async def _feed_handler(request: web.Request) -> web.Response:
         {
             "id": str(doc["_id"]),
             "url": f"{R2_PUBLIC_BASE_URL}/{doc['r2_key']}",
+            "poster": f"{R2_PUBLIC_BASE_URL}/{doc['poster_key']}" if doc.get("poster_key") else None,
             "duration": doc.get("duration", 0),
         }
         for doc in docs
