@@ -2,7 +2,7 @@ from pyrogram import Client, filters
 from vars import DATABASE_CHANNEL_ID, ADMIN_IDS, ADMIN_ID, R2_ENABLED, REELS_MAX_DURATION
 from Database.maindb import mdb
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-import asyncio, os, tempfile
+import asyncio, os, tempfile, re
 from pyrogram.errors import FloodWait, ChannelPrivate, ChatAdminRequired, UsernameNotOccupied
 from datetime import datetime
 from pyrogram.filters import create
@@ -417,13 +417,58 @@ async def start_indexing(client: Client, user_id: int):
     INDEX_TASKS.pop(user_id, None)
 
 
-# ==================== REELS BACKFILL (one-time, for pre-existing videos) ====================
+# ==================== REELS BACKFILL (channel + range picker) ====================
+# /mirrorexisting: admin picks a channel, then gives an end point (forward the
+# newest message to mirror up to, or send its link) and a start point (a bare
+# message-ID number, or a link) — mirrors just that range to R2, instead of
+# scanning every channel. Follows the same state-dict + callback pattern as
+# /index above (MIRROR_TASKS mirrors INDEX_TASKS's shape on purpose).
+
+MIRROR_TASKS: dict[int, dict] = {}
+
+_MIRROR_LINK_RE = re.compile(
+    r"(?:https?://)?t\.me/(c/)?([A-Za-z0-9_]+)/(\d+)(?:[/?].*)?$", re.IGNORECASE
+)
+
+
+def _parse_mirror_link(target: str):
+    """Parse a t.me message link into (channel_ref, msg_id). channel_ref is
+    an int chat_id for '/c/' links (with -100 prefix already applied), or a
+    str username for public links. None if not a recognizable link."""
+    m = _MIRROR_LINK_RE.search(target.strip())
+    if not m:
+        return None
+    is_private, ident, mid = m.group(1), m.group(2), m.group(3)
+    if is_private:
+        if not ident.isdigit():
+            return None
+        return int(f"-100{ident}"), int(mid)
+    return ident, int(mid)
+
+
+async def _extract_ref(client: Client, message: Message):
+    """From an incoming message, get (channel_id, msg_id) — either from a
+    forwarded-with-origin-intact message, or a t.me link in the text.
+    Returns None if neither is present/resolvable."""
+    if message.forward_from_chat and message.forward_from_message_id:
+        return message.forward_from_chat.id, message.forward_from_message_id
+    if message.text:
+        parsed = _parse_mirror_link(message.text)
+        if parsed:
+            channel_ref, mid = parsed
+            if isinstance(channel_ref, int):
+                return channel_ref, mid
+            try:
+                chat = await client.get_chat(channel_ref)
+                return chat.id, mid
+            except Exception:
+                return None
+    return None
+
 
 @Client.on_message(filters.command("mirrorexisting") & filters.private)
 async def mirror_existing_command(client: Client, message: Message):
-    """Admin-only: mirror already-indexed videos (indexed before the Reels
-    WebApp feature existed) to R2 so they show up in the feed too. Safe to
-    run repeatedly — already-mirrored videos are skipped automatically."""
+    """Admin-only: pick a channel + message-ID range to mirror to R2."""
     if message.from_user.id not in _admin_list():
         await message.reply_text("**🚫 You're not authorized to use this command.**")
         return
@@ -431,21 +476,136 @@ async def mirror_existing_command(client: Client, message: Message):
         await message.reply_text("❌ R2 isn't configured (missing R2_* env vars) — nothing to backfill.")
         return
 
-    status = await message.reply_text("⏳ Scanning for reels-eligible videos not yet mirrored...")
+    status_msg = await message.reply_text("⏳ Fetching channel list...")
+    buttons = []
+    failed_channels = []
+    for ch in CHANNEL_LIST:
+        try:
+            chat = await client.get_chat(ch)
+            title = chat.title or str(ch)
+            pending = await mdb.async_video_collection.count_documents({
+                "source_channel_id": ch,
+                "media_type": "video",
+                "duration": {"$gt": 0, "$lte": REELS_MAX_DURATION},
+                "reels_eligible": {"$ne": True},
+            })
+            buttons.append([InlineKeyboardButton(
+                f"{title} ({pending} pending)", callback_data=f"mirrorsel_{ch}"
+            )])
+        except (ChannelPrivate, ChatAdminRequired):
+            failed_channels.append(f"`{ch}` — bot not admin/member")
+        except Exception as e:
+            failed_channels.append(f"`{ch}` — {type(e).__name__}: {e}")
+
+    buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="mirrorcancel")])
+
+    if len(buttons) == 1:
+        await status_msg.edit_text(
+            "❌ **No accessible channels found.**\n\n" + "\n".join(failed_channels)
+        )
+        return
+
+    text_out = "📂 **Select a channel to mirror reels from:**\n"
+    if failed_channels:
+        text_out += "\n⚠️ **Couldn't fetch these:**\n" + "\n".join(failed_channels) + "\n"
+    await status_msg.edit_text(text_out, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+def _is_awaiting_mirror(state: str):
+    def _check(_, __, message):
+        if not message.from_user:
+            return False
+        task = MIRROR_TASKS.get(message.from_user.id)
+        return bool(task and task.get("state") == state and not (message.text and message.text.startswith("/")))
+    return create(_check)
+
+
+@Client.on_message(filters.private & _is_awaiting_mirror("await_end"))
+async def mirror_receive_end(client: Client, message: Message):
+    task = MIRROR_TASKS.get(message.from_user.id)
+    if not task:
+        return
+    ref = await _extract_ref(client, message)
+    if not ref:
+        await message.reply_text(
+            "❌ I need either a **forwarded message** (with the channel tag visible, not "
+            "forwarded anonymously) or a **t.me link** to that message. Try again."
+        )
+        return
+    channel_id, end_id = ref
+    if channel_id != task["channel_id"]:
+        await message.reply_text(
+            f"⚠️ That message is from a different channel (`{channel_id}`) than the one you "
+            f"selected (`{task['channel_id']}`). Forward a message from the selected channel."
+        )
+        return
+
+    task["end_id"] = end_id
+    task["state"] = "await_start"
+    await message.reply_text(
+        f"✅ End point set: message `{end_id}`.\n\n"
+        f"Now send the **starting point** — a plain number (e.g. `250`) to start from that "
+        f"message ID, or a t.me link/forwarded message for the start."
+    )
+
+
+@Client.on_message(filters.private & _is_awaiting_mirror("await_start"))
+async def mirror_receive_start(client: Client, message: Message):
+    task = MIRROR_TASKS.get(message.from_user.id)
+    if not task:
+        return
+
+    raw = (message.text or "").strip()
+    start_id = None
+    if raw.isdigit():
+        start_id = int(raw)
+    else:
+        ref = await _extract_ref(client, message)
+        if ref and ref[0] == task["channel_id"]:
+            start_id = ref[1]
+
+    if start_id is None:
+        await message.reply_text(
+            "❌ Send a plain message-ID number (e.g. `250`), or a t.me link/forwarded "
+            "message from the selected channel."
+        )
+        return
+
+    end_id = task["end_id"]
+    if start_id > end_id:
+        start_id, end_id = end_id, start_id  # forgiving swap if given backwards
+
+    channel_id = task["channel_id"]
+    progress = await message.reply_text(
+        f"⏳ **Mirroring started.**\nChannel: `{channel_id}`\nRange: `{start_id}` → `{end_id}`"
+    )
+    MIRROR_TASKS[message.from_user.id] = {
+        "state": "running", "channel_id": channel_id,
+        "start_id": start_id, "end_id": end_id, "progress_msg": progress,
+    }
+    asyncio.create_task(run_ranged_mirror(client, message.from_user.id))
+
+
+async def run_ranged_mirror(client: Client, user_id: int):
+    task = MIRROR_TASKS.get(user_id)
+    if not task:
+        return
+    channel_id, start_id, end_id = task["channel_id"], task["start_id"], task["end_id"]
+    progress = task["progress_msg"]
+
     total_mirrored = 0
     stuck_batches = 0
     while True:
-        batch = await mdb.get_reels_eligible_pending(REELS_MAX_DURATION, batch_size=25)
+        batch = await mdb.get_reels_eligible_range(channel_id, start_id, end_id, REELS_MAX_DURATION, batch_size=25)
         if not batch:
             break
         mirrored_before = total_mirrored
         for doc in batch:
-            src_channel = doc.get("source_channel_id")
             vid_id = doc.get("video_id")
-            if src_channel is None or vid_id is None:
-                continue  # legacy doc — needs /fix_index, not this
+            if vid_id is None:
+                continue
             try:
-                msg = await client.get_messages(src_channel, vid_id)
+                msg = await client.get_messages(channel_id, vid_id)
                 if msg and not msg.empty and msg.video:
                     await mirror_to_r2_if_eligible(client, msg, "video", doc.get("duration", 0))
                     total_mirrored += 1
@@ -454,19 +614,24 @@ async def mirror_existing_command(client: Client, message: Message):
             except Exception as e:
                 print(f"[mirrorexisting] error on video_id={vid_id}: {e}")
         try:
-            await status.edit_text(f"⏳ Mirrored **{total_mirrored}** so far...")
+            await progress.edit_text(f"⏳ Mirrored **{total_mirrored}** so far (range `{start_id}`–`{end_id}`)...")
         except Exception:
             pass
         if total_mirrored == mirrored_before:
             stuck_batches += 1
             if stuck_batches >= 3:
-                await status.edit_text(
-                    f"⚠️ **Backfill stopped.** Mirrored **{total_mirrored}**, but the remaining "
-                    f"videos keep failing to mirror (check logs / R2 credentials)."
+                await progress.edit_text(
+                    f"⚠️ **Stopped.** Mirrored **{total_mirrored}**, but the remaining videos in "
+                    f"this range keep failing (check logs / R2 credentials)."
                 )
+                MIRROR_TASKS.pop(user_id, None)
                 return
         else:
             stuck_batches = 0
-        await asyncio.sleep(0.5)  # let the semaphore-bound mirror tasks drain a bit
+        await asyncio.sleep(0.5)
 
-    await status.edit_text(f"✅ **Backfill complete.** Mirrored **{total_mirrored}** video(s) to R2.")
+    await progress.edit_text(
+        f"✅ **Done.** Mirrored **{total_mirrored}** video(s) from channel `{channel_id}`, "
+        f"range `{start_id}`–`{end_id}`."
+    )
+    MIRROR_TASKS.pop(user_id, None)
