@@ -351,6 +351,14 @@ async def callback_query_handler(client, query: CallbackQuery):
             except Exception:
                 pass
 
+        elif data == "mirrorstop":
+            task = MIRROR_TASKS.get(uid)
+            if not task or task.get("state") != "running":
+                await query.answer("No mirror job is currently running.", show_alert=True)
+            else:
+                task["cancel"] = True
+                await query.answer("Stopping... this takes effect within a few seconds.")
+
     except Exception as e:
         print(f"[callback_query_handler] error: {e}")
 
