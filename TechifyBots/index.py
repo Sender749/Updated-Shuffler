@@ -15,37 +15,91 @@ INDEX_TASKS = {}
 # blocks the indexing loop (real-time or bulk backfill). Bounded by a
 # semaphore so we don't fire dozens of concurrent downloads/uploads during a
 # big backfill and get flood-waited by Telegram or rate-limited by R2.
-_MIRROR_SEMAPHORE = asyncio.Semaphore(3)
+_MIRROR_SEMAPHORE = asyncio.Semaphore(2)
 
 
-async def _run_ffmpeg_faststart(src_path: str) -> str:
-    """
-    Re-mux (not re-encode) the video so its 'moov atom' (metadata index) sits
-    at the front of the file instead of the end.
-
-    This is the actual fix for "screen stays blank before the video starts":
-    browsers/HTML5 <video> can only begin playback once they've read the moov
-    atom. Telegram's own file layout often puts it at the END of the file, so
-    a browser doing progressive HTTP playback has to download almost the
-    *entire* video before it can show a single frame — regardless of how fast
-    R2/the network is. `-movflags +faststart` just repositions that index;
-    `-c copy` means no re-encoding, so it's near-instant and lossless.
-    Falls back to the original file untouched if ffmpeg isn't available or
-    fails for any reason (e.g. already-faststart or oddly encoded input).
-    """
-    out_path = src_path + ".fast.mp4"
+async def _probe_video(path: str) -> dict:
+    """Returns {'height': int, 'bitrate_kbps': int} — best-effort, zeros on failure."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-i", src_path,
-            "-c", "copy", "-movflags", "+faststart",
-            out_path,
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=height,bit_rate",
+            "-show_entries", "format=bit_rate",
+            "-of", "json", path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
-        await asyncio.wait_for(proc.communicate(), timeout=120)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
+        import json as _json
+        data = _json.loads(out.decode() or "{}")
+        stream = (data.get("streams") or [{}])[0]
+        height = int(stream.get("height") or 0)
+        # Per-stream bit_rate is sometimes missing (esp. for VFR/odd containers);
+        # fall back to the overall container bitrate, which is always present.
+        bitrate = stream.get("bit_rate") or (data.get("format") or {}).get("bit_rate") or 0
+        return {"height": height, "bitrate_kbps": int(bitrate) // 1000}
+    except Exception as e:
+        print(f"[probe] ffprobe failed for {path}: {e}")
+        return {"height": 0, "bitrate_kbps": 0}
+
+
+async def _optimize_for_reels(src_path: str) -> str:
+    """
+    Prepares a video for smooth reels playback. Two things happen here:
+
+    1. Faststart (always): moves the 'moov atom' (metadata index) to the
+       front of the file. Browsers can only start playback once they've read
+       this index — Telegram's own files often have it at the END, so a
+       browser doing progressive HTTP playback would otherwise need to
+       download almost the *entire* file before showing a single frame,
+       regardless of network speed. This alone fixes "blank screen before
+       start".
+
+    2. Downscale + cap bitrate (only when needed): if the source is taller
+       than REELS_MAX_HEIGHT or its bitrate is above REELS_TARGET_BITRATE_KBPS,
+       it gets re-encoded smaller/lighter. This is what fixes mid-playback
+       stalling ("stuck sometimes") — a smaller, lower-bitrate file needs far
+       less buffering headroom to play smoothly on a phone connection. Videos
+       already small/light enough skip this and only get the cheap, lossless
+       faststart remux (no quality loss, no re-encode time).
+
+    Falls back to the original file untouched if ffmpeg/ffprobe fail for any
+    reason — mirroring should never break because of this step.
+    """
+    from vars import REELS_MAX_HEIGHT, REELS_TARGET_BITRATE_KBPS
+
+    info = await _probe_video(src_path)
+    needs_transcode = (
+        (info["height"] and info["height"] > REELS_MAX_HEIGHT)
+        or (info["bitrate_kbps"] and info["bitrate_kbps"] > REELS_TARGET_BITRATE_KBPS)
+    )
+
+    out_path = src_path + ".opt.mp4"
+    try:
+        if needs_transcode:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-i", src_path,
+                "-vf", f"scale=-2:'min(ih,{REELS_MAX_HEIGHT})'",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+                "-maxrate", f"{REELS_TARGET_BITRATE_KBPS}k", "-bufsize", f"{REELS_TARGET_BITRATE_KBPS * 2}k",
+                "-c:a", "aac", "-b:a", "96k",
+                "-movflags", "+faststart",
+                out_path,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            timeout = 240  # re-encoding takes real time; give it room before giving up
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-i", src_path,
+                "-c", "copy", "-movflags", "+faststart",
+                out_path,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            timeout = 120
+        await asyncio.wait_for(proc.communicate(), timeout=timeout)
         if proc.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
             return out_path
     except Exception as e:
-        print(f"[faststart] ffmpeg failed, using original file: {e}")
+        print(f"[optimize] ffmpeg failed, using original file: {e}")
     if os.path.exists(out_path):
         try:
             os.remove(out_path)
@@ -97,7 +151,7 @@ async def mirror_to_r2_if_eligible(client: Client, msg: Message, media_type: str
             if not downloaded:
                 return
 
-            fast_path = await _run_ffmpeg_faststart(tmp_path)
+            fast_path = await _optimize_for_reels(tmp_path)
             thumb_path = await _extract_thumbnail(fast_path)
 
             key = f"reels/{msg.chat.id}_{msg.id}.mp4"
@@ -551,6 +605,17 @@ async def mirror_existing_command(client: Client, message: Message):
         await message.reply_text("❌ R2 isn't configured (missing R2_* env vars) — nothing to backfill.")
         return
 
+    existing = MIRROR_TASKS.get(message.from_user.id)
+    if existing and existing.get("state") == "running":
+        await message.reply_text(
+            f"⏳ **A mirror job is already running.**\nChannel: `{existing['channel_id']}`\n"
+            f"Range: `{existing['start_id']}`–`{existing['end_id']}`\nMirrored so far: "
+            f"**{existing.get('mirrored', 0)}**\n\nUse the Stop button on its progress message "
+            f"to cancel it, or wait for it to finish before starting a new one.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Stop it", callback_data="mirrorstop")]])
+        )
+        return
+
     status_msg = await message.reply_text("⏳ Fetching channel list...")
     buttons = []
     failed_channels = []
@@ -651,12 +716,15 @@ async def mirror_receive_start(client: Client, message: Message):
         start_id, end_id = end_id, start_id  # forgiving swap if given backwards
 
     channel_id = task["channel_id"]
+    stop_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Stop mirroring", callback_data="mirrorstop")]])
     progress = await message.reply_text(
-        f"⏳ **Mirroring started.**\nChannel: `{channel_id}`\nRange: `{start_id}` → `{end_id}`"
+        f"⏳ **Mirroring started.**\nChannel: `{channel_id}`\nRange: `{start_id}` → `{end_id}`",
+        reply_markup=stop_markup,
     )
     MIRROR_TASKS[message.from_user.id] = {
         "state": "running", "channel_id": channel_id,
         "start_id": start_id, "end_id": end_id, "progress_msg": progress,
+        "mirrored": 0, "cancel": False,
     }
     asyncio.create_task(run_ranged_mirror(client, message.from_user.id))
 
@@ -667,15 +735,31 @@ async def run_ranged_mirror(client: Client, user_id: int):
         return
     channel_id, start_id, end_id = task["channel_id"], task["start_id"], task["end_id"]
     progress = task["progress_msg"]
+    stop_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Stop mirroring", callback_data="mirrorstop")]])
 
     total_mirrored = 0
     stuck_batches = 0
     while True:
+        task = MIRROR_TASKS.get(user_id)
+        if not task or task.get("cancel"):
+            await progress.edit_text(
+                f"🛑 **Mirroring stopped by admin.** Mirrored **{total_mirrored}** video(s) "
+                f"before stopping (range `{start_id}`–`{end_id}`)."
+            )
+            MIRROR_TASKS.pop(user_id, None)
+            return
+
         batch = await mdb.get_reels_eligible_range(channel_id, start_id, end_id, REELS_MAX_DURATION, batch_size=25)
         if not batch:
             break
         mirrored_before = total_mirrored
         for doc in batch:
+            # Re-check cancel between individual videos too, not just between
+            # batches — so Stop takes effect within a couple seconds instead
+            # of having to finish the whole 25-video batch first.
+            task = MIRROR_TASKS.get(user_id)
+            if not task or task.get("cancel"):
+                break
             vid_id = doc.get("video_id")
             if vid_id is None:
                 continue
@@ -684,12 +768,17 @@ async def run_ranged_mirror(client: Client, user_id: int):
                 if msg and not msg.empty and msg.video:
                     await mirror_to_r2_if_eligible(client, msg, "video", doc.get("duration", 0))
                     total_mirrored += 1
+                    if task:
+                        task["mirrored"] = total_mirrored
             except FloodWait as e:
                 await asyncio.sleep(e.value + 1)
             except Exception as e:
                 print(f"[mirrorexisting] error on video_id={vid_id}: {e}")
         try:
-            await progress.edit_text(f"⏳ Mirrored **{total_mirrored}** so far (range `{start_id}`–`{end_id}`)...")
+            await progress.edit_text(
+                f"⏳ Mirrored **{total_mirrored}** so far (range `{start_id}`–`{end_id}`)...",
+                reply_markup=stop_markup,
+            )
         except Exception:
             pass
         if total_mirrored == mirrored_before:
