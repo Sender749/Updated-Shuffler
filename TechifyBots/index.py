@@ -18,12 +18,69 @@ INDEX_TASKS = {}
 _MIRROR_SEMAPHORE = asyncio.Semaphore(3)
 
 
+async def _run_ffmpeg_faststart(src_path: str) -> str:
+    """
+    Re-mux (not re-encode) the video so its 'moov atom' (metadata index) sits
+    at the front of the file instead of the end.
+
+    This is the actual fix for "screen stays blank before the video starts":
+    browsers/HTML5 <video> can only begin playback once they've read the moov
+    atom. Telegram's own file layout often puts it at the END of the file, so
+    a browser doing progressive HTTP playback has to download almost the
+    *entire* video before it can show a single frame — regardless of how fast
+    R2/the network is. `-movflags +faststart` just repositions that index;
+    `-c copy` means no re-encoding, so it's near-instant and lossless.
+    Falls back to the original file untouched if ffmpeg isn't available or
+    fails for any reason (e.g. already-faststart or oddly encoded input).
+    """
+    out_path = src_path + ".fast.mp4"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", src_path,
+            "-c", "copy", "-movflags", "+faststart",
+            out_path,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=120)
+        if proc.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            return out_path
+    except Exception as e:
+        print(f"[faststart] ffmpeg failed, using original file: {e}")
+    if os.path.exists(out_path):
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+    return src_path  # fall back to original — still uploads, just without the speedup
+
+
+async def _extract_thumbnail(video_path: str) -> str:
+    """Grab a single frame near the start as a small JPEG poster, so the
+    reel shows something instantly instead of a blank black rectangle while
+    the video itself is still buffering. Returns a temp file path, or None
+    on failure (caller just skips the poster in that case)."""
+    out_path = video_path + ".thumb.jpg"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-ss", "0.3", "-i", video_path,
+            "-frames:v", "1", "-vf", "scale=480:-2",
+            out_path,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=30)
+        if proc.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            return out_path
+    except Exception as e:
+        print(f"[thumbnail] extraction failed: {e}")
+    return None
+
+
 async def mirror_to_r2_if_eligible(client: Client, msg: Message, media_type: str, duration: int):
     """If R2 is configured and this video is short enough for reels, download
-    it once via the bot and upload it to R2, then record it as reels-eligible.
-    Any failure here is swallowed — it must never break indexing, and a video
-    that fails to mirror simply stays DM-only (and un-flagged, so it can be
-    retried later via /mirrorexisting)."""
+    it once via the bot, faststart-remux it, upload it (+ a poster thumbnail)
+    to R2, then record it as reels-eligible. Any failure here is swallowed —
+    it must never break indexing, and a video that fails to mirror simply
+    stays DM-only (and un-flagged, so it can be retried via /mirrorexisting)."""
     if not R2_ENABLED or media_type != "video":
         return
     if duration <= 0 or duration > REELS_MAX_DURATION:
@@ -31,28 +88,46 @@ async def mirror_to_r2_if_eligible(client: Client, msg: Message, media_type: str
 
     async with _MIRROR_SEMAPHORE:
         tmp_path = None
+        fast_path = None
+        thumb_path = None
         try:
             fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
             os.close(fd)
             downloaded = await client.download_media(msg, file_name=tmp_path)
             if not downloaded:
                 return
+
+            fast_path = await _run_ffmpeg_faststart(tmp_path)
+            thumb_path = await _extract_thumbnail(fast_path)
+
             key = f"reels/{msg.chat.id}_{msg.id}.mp4"
-            size = await r2_uploader.upload_file(tmp_path, key)
+            size = await r2_uploader.upload_file(fast_path, key, content_type="video/mp4")
             if size < 0:
                 return
+
+            poster_key = None
+            poster_size = 0
+            if thumb_path:
+                poster_key = f"reels/thumbs/{msg.chat.id}_{msg.id}.jpg"
+                thumb_size = await r2_uploader.upload_file(thumb_path, poster_key, content_type="image/jpeg")
+                if thumb_size < 0:
+                    poster_key = None
+                else:
+                    poster_size = thumb_size
+
             await mdb.mark_reels_eligible(
                 video_id=msg.id, source_channel_id=msg.chat.id,
-                r2_key=key, r2_size=size,
+                r2_key=key, r2_size=size, poster_key=poster_key, poster_size=poster_size,
             )
         except Exception as e:
             print(f"[mirror_to_r2_if_eligible] error for msg {getattr(msg, 'id', '?')}: {e}")
         finally:
-            if tmp_path and os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
+            for p in {tmp_path, fast_path, thumb_path}:
+                if p and os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
 
 # ── helper: always returns ADMIN_IDS list ────────────────────────────────────
 def _admin_list():
