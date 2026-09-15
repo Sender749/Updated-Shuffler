@@ -2,6 +2,7 @@
   "use strict";
 
   const tg = window.Telegram && window.Telegram.WebApp;
+  const INIT_DATA = tg ? tg.initData || "" : "";
   if (tg) {
     tg.ready();
     tg.expand();
@@ -17,7 +18,11 @@
   let nextCursor = null;
   let loadingMore = false;
   let reachedEnd = false;
-  let userHasUnmuted = false; // once they unmute once, keep new reels unmuted too
+  // Sticky for this session only: once the user taps unmute, every reel they
+  // scroll to next plays unmuted too, until they tap mute again. A fresh
+  // page load (new session) always starts back at muted — nothing here is
+  // persisted to storage on purpose, matching "always muted by default".
+  let userHasUnmuted = false;
 
   function showUnavailable(message) {
     if (message) unavailableTextEl.textContent = message;
@@ -64,6 +69,20 @@
     });
   }, { threshold: [0, 0.6, 1] });
 
+  async function sendLike(videoId) {
+    try {
+      const res = await fetch("/webapp/api/like", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ video_id: videoId, init_data: INIT_DATA }),
+      });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (e) {
+      return null;
+    }
+  }
+
   function buildReel(item) {
     const wrap = document.createElement("div");
     wrap.className = "reel";
@@ -76,18 +95,94 @@
     video.playsInline = true;
     // Start muted — this is what guarantees autoplay actually fires
     // instantly across browsers/WebViews without waiting on a user gesture.
-    // Once the user taps to unmute once, we carry that preference forward
-    // to reels they scroll to next, same as Instagram/TikTok.
     video.muted = !userHasUnmuted;
     video.preload = "metadata"; // upgraded to "auto" for the front of the feed by updatePreloadWindow
     video.controls = false;
 
+    // Buffering spinner — shown initially AND whenever playback stalls
+    // mid-video (not just before the first frame), so a mid-play hiccup
+    // doesn't look like the app froze.
     const spinner = document.createElement("div");
     spinner.className = "reel-spinner";
-    wrap.appendChild(spinner);
     const hideSpinner = () => spinner.classList.add("hidden");
+    const showSpinner = () => spinner.classList.remove("hidden");
     video.addEventListener("canplay", hideSpinner);
     video.addEventListener("playing", hideSpinner);
+    video.addEventListener("waiting", showSpinner);
+    video.addEventListener("stalled", showSpinner);
+
+    // Thin progress line along the bottom — no numbers, just a bar that
+    // fills as the video plays, resetting each loop.
+    const progressTrack = document.createElement("div");
+    progressTrack.className = "progress-track";
+    const progressFill = document.createElement("div");
+    progressFill.className = "progress-fill";
+    progressTrack.appendChild(progressFill);
+    video.addEventListener("timeupdate", () => {
+      if (video.duration > 0) {
+        progressFill.style.width = `${(video.currentTime / video.duration) * 100}%`;
+      }
+    });
+
+    // Right-side action buttons — mute toggle + like — transparent
+    // background, stacked vertically, mid-right of the screen.
+    const actions = document.createElement("div");
+    actions.className = "side-actions";
+
+    const muteBtn = document.createElement("button");
+    muteBtn.className = "action-btn mute-btn";
+    muteBtn.type = "button";
+    const renderMuteIcon = () => { muteBtn.textContent = video.muted ? "🔇" : "🔊"; };
+    renderMuteIcon();
+    muteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      video.muted = !video.muted;
+      if (!video.muted) userHasUnmuted = true;
+      renderMuteIcon();
+    });
+
+    const likeBtn = document.createElement("button");
+    likeBtn.className = "action-btn like-btn";
+    likeBtn.type = "button";
+    let liked = !!item.liked;
+    let count = item.likes || 0;
+    const renderLike = () => {
+      likeBtn.innerHTML =
+        `<span class="like-icon${liked ? " liked" : ""}">${liked ? "❤️" : "🤍"}</span>` +
+        `<span class="like-count">${count}</span>`;
+    };
+    renderLike();
+    likeBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      // Optimistic update so it feels instant; reconciled against the
+      // server's real response right after (and reverted on failure).
+      const prevLiked = liked, prevCount = count;
+      liked = !liked;
+      count += liked ? 1 : -1;
+      renderLike();
+      const result = await sendLike(item.id);
+      if (!result) {
+        liked = prevLiked;
+        count = prevCount;
+        renderLike();
+        return;
+      }
+      liked = result.liked;
+      count = result.count;
+      renderLike();
+    });
+
+    actions.appendChild(muteBtn);
+    actions.appendChild(likeBtn);
+
+    // Tapping the video body itself still toggles mute too, same as before —
+    // the button is there for a clear visual affordance, this keeps the
+    // "tap anywhere" habit working alongside it.
+    wrap.addEventListener("click", () => {
+      video.muted = !video.muted;
+      if (!video.muted) userHasUnmuted = true;
+      renderMuteIcon();
+    });
 
     if (!userHasUnmuted) {
       const muteHint = document.createElement("div");
@@ -99,12 +194,10 @@
       });
     }
 
-    wrap.addEventListener("click", () => {
-      video.muted = !video.muted;
-      if (!video.muted) userHasUnmuted = true;
-    });
-
     wrap.appendChild(video);
+    wrap.appendChild(spinner);
+    wrap.appendChild(actions);
+    wrap.appendChild(progressTrack);
     observer.observe(wrap);
     return wrap;
   }
@@ -115,6 +208,7 @@
     try {
       const url = new URL("/webapp/api/feed", window.location.origin);
       if (nextCursor) url.searchParams.set("after", nextCursor);
+      if (INIT_DATA) url.searchParams.set("init_data", INIT_DATA);
       const res = await fetch(url);
       const data = await res.json().catch(() => ({}));
 
@@ -167,8 +261,7 @@
   });
 
   // Single request on load — the feed endpoint itself reports whether the
-  // WebApp is enabled, so we skip the extra /api/status round trip that used
-  // to happen before the first feed fetch. One less network hop before
+  // WebApp is enabled, so there's no separate /api/status round trip before
   // anything can appear on screen.
   loadMore();
 })();
