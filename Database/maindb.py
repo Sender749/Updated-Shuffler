@@ -28,6 +28,7 @@ class Database:
         self.async_global_limits = self.async_db["global_limits"]
         self.async_r2_usage = self.async_db["r2_usage"]
         self.async_reel_likes = self.async_db["reel_likes"]
+        self.async_reel_views = self.async_db["reel_views"]
         asyncio.create_task(self.check_and_reset_daily_counts())
         asyncio.create_task(self.check_premium_expire())
         asyncio.create_task(self.check_r2_usage_alert())
@@ -415,9 +416,9 @@ class Database:
 
     async def get_reels_feed(self, after_id: str = None, limit: int = 10) -> list:
         """
-        Return up to `limit` reels-eligible videos (mirrored to R2), newest
-        first, paginated with an ObjectId cursor (`after_id` = last _id the
-        client already has).
+        Anonymous fallback (no verified Telegram user, so we have no way to
+        remember what they've seen): plain newest-first pagination via an
+        ObjectId cursor (`after_id` = last _id the client already has).
         """
         from bson import ObjectId
         query = {"reels_eligible": True}
@@ -428,6 +429,57 @@ class Database:
                 pass
         cursor = self.async_video_collection.find(query).sort("_id", -1).limit(limit)
         return [v async for v in cursor]
+
+    async def get_fresh_reels_for_user(self, user_id: int, limit: int = 10) -> list:
+        """
+        For a verified Telegram user: return `limit` reels-eligible videos
+        they HAVEN'T been shown before, in random order, and record them as
+        seen — so re-opening the WebApp (or scrolling further) never repeats
+        a video until every eligible video has been shown to them at least
+        once. Once they've exhausted the pool, their seen-history resets
+        automatically and the cycle starts over (a fresh shuffle again, not
+        the same fixed order every time).
+        """
+        from bson import ObjectId
+
+        seen_ids = [doc["video_id"] async for doc in self.async_reel_views.find(
+            {"user_id": user_id}, {"video_id": 1}
+        )]
+        seen_object_ids = []
+        for sid in seen_ids:
+            try:
+                seen_object_ids.append(ObjectId(sid))
+            except Exception:
+                pass
+
+        pipeline = [
+            {"$match": {"reels_eligible": True, "_id": {"$nin": seen_object_ids}}},
+            {"$sample": {"size": limit}},
+        ]
+        docs = [d async for d in self.async_video_collection.aggregate(pipeline)]
+
+        if not docs and seen_object_ids:
+            # Seen everything eligible — reset their history and reshuffle
+            # from the full pool instead of showing nothing.
+            await self.async_reel_views.delete_many({"user_id": user_id})
+            pipeline = [
+                {"$match": {"reels_eligible": True}},
+                {"$sample": {"size": limit}},
+            ]
+            docs = [d async for d in self.async_video_collection.aggregate(pipeline)]
+
+        if docs:
+            now = datetime.now()
+            try:
+                await self.async_reel_views.insert_many([
+                    {"_id": f"{d['_id']}:{user_id}", "video_id": str(d["_id"]),
+                     "user_id": user_id, "seen_at": now}
+                    for d in docs
+                ], ordered=False)
+            except Exception:
+                pass  # duplicate-key races (same video marked seen twice) are harmless — ignore
+
+        return docs
 
     async def mark_reels_eligible(self, video_id: int, source_channel_id, r2_key: str,
                                    r2_size: int, poster_key: str = None, poster_size: int = 0):
