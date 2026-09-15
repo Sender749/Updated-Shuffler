@@ -449,6 +449,20 @@ class Database:
         }).limit(batch_size)
         return [v async for v in cursor]
 
+    async def get_reels_eligible_range(self, source_channel_id, start_id: int, end_id: int,
+                                        max_duration: int, batch_size: int = 25) -> list:
+        """Same as get_reels_eligible_pending, but scoped to one channel and
+        a [start_id, end_id] message-ID range — used by /mirrorexisting's
+        channel+range picker flow."""
+        cursor = self.async_video_collection.find({
+            "source_channel_id": source_channel_id,
+            "video_id": {"$gte": start_id, "$lte": end_id},
+            "media_type": "video",
+            "duration": {"$gt": 0, "$lte": max_duration},
+            "reels_eligible": {"$ne": True},
+        }).limit(batch_size)
+        return [v async for v in cursor]
+
 
 def format_remaining_time(expiry):
     delta = expiry - datetime.now()
