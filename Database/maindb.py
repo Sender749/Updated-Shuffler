@@ -27,6 +27,7 @@ class Database:
         self.async_limits_collection = self.async_db["limits"]
         self.async_global_limits = self.async_db["global_limits"]
         self.async_r2_usage = self.async_db["r2_usage"]
+        self.async_reel_likes = self.async_db["reel_likes"]
         asyncio.create_task(self.check_and_reset_daily_counts())
         asyncio.create_task(self.check_premium_expire())
         asyncio.create_task(self.check_r2_usage_alert())
@@ -438,6 +439,46 @@ class Database:
             {"$set": update},
         )
         await self.add_r2_usage_bytes(r2_size + poster_size)
+
+    # ── REELS LIKES ───────────────────────────────────────────────────────────
+    # One doc per (video, user) in reel_likes, keyed so a user can only like a
+    # given reel once. The running count itself lives on the video doc
+    # (likes_count) so the feed can read it directly without a separate
+    # aggregation on every request.
+
+    async def toggle_like(self, video_object_id: str, user_id: int) -> dict:
+        from bson import ObjectId
+        like_key = f"{video_object_id}:{user_id}"
+        existing = await self.async_reel_likes.find_one({"_id": like_key})
+        if existing:
+            await self.async_reel_likes.delete_one({"_id": like_key})
+            delta = -1
+            liked = False
+        else:
+            await self.async_reel_likes.insert_one({
+                "_id": like_key, "video_id": video_object_id, "user_id": user_id,
+                "liked_at": datetime.now(),
+            })
+            delta = 1
+            liked = True
+
+        result = await self.async_video_collection.find_one_and_update(
+            {"_id": ObjectId(video_object_id)},
+            {"$inc": {"likes_count": delta}},
+            return_document=True,
+        )
+        count = max(0, (result or {}).get("likes_count", 0))
+        return {"liked": liked, "count": count}
+
+    async def get_liked_video_ids(self, user_id: int, video_object_ids: list) -> set:
+        """Given a batch of video _ids (as strings) from a feed page, return
+        the subset this user has already liked — used to mark hearts as
+        filled/unfilled when the feed loads."""
+        if not user_id or not video_object_ids:
+            return set()
+        keys = [f"{vid}:{user_id}" for vid in video_object_ids]
+        cursor = self.async_reel_likes.find({"_id": {"$in": keys}}, {"video_id": 1})
+        return {doc["video_id"] async for doc in cursor}
 
     async def get_reels_eligible_pending(self, max_duration: int, batch_size: int = 25) -> list:
         """Existing indexed videos that qualify for reels but haven't been
