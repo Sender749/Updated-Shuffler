@@ -84,6 +84,70 @@ html, body {
   z-index: 2;
 }
 
+/* Right-side action bar (mute + like) — transparent background, stacked
+   vertically, vertically centered on the right edge of the screen. */
+.side-actions {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+  z-index: 3;
+}
+
+.action-btn {
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 28px;
+  line-height: 1;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  /* Soft shadow instead of a background chip — keeps icons legible over any
+     video frame without adding a visible button background. */
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.6));
+}
+
+.like-icon {
+  display: block;
+  transition: transform 0.15s ease;
+}
+
+.like-icon.liked {
+  transform: scale(1.15);
+}
+
+.like-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+}
+
+/* Thin progress line along the very bottom of each reel — just a bar that
+   fills as the video plays, no time/duration numbers. */
+.progress-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.25);
+  z-index: 3;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: #fff;
+}
+
 .overlay {
   position: fixed;
   inset: 0;
