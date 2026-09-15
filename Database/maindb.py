@@ -428,12 +428,16 @@ class Database:
         cursor = self.async_video_collection.find(query).sort("_id", -1).limit(limit)
         return [v async for v in cursor]
 
-    async def mark_reels_eligible(self, video_id: int, source_channel_id, r2_key: str, r2_size: int):
+    async def mark_reels_eligible(self, video_id: int, source_channel_id, r2_key: str,
+                                   r2_size: int, poster_key: str = None, poster_size: int = 0):
+        update = {"reels_eligible": True, "r2_key": r2_key, "r2_size": r2_size}
+        if poster_key:
+            update["poster_key"] = poster_key
         await self.async_video_collection.update_one(
             {"video_id": video_id, "source_channel_id": source_channel_id},
-            {"$set": {"reels_eligible": True, "r2_key": r2_key, "r2_size": r2_size}},
+            {"$set": update},
         )
-        await self.add_r2_usage_bytes(r2_size)
+        await self.add_r2_usage_bytes(r2_size + poster_size)
 
     async def get_reels_eligible_pending(self, max_duration: int, batch_size: int = 25) -> list:
         """Existing indexed videos that qualify for reels but haven't been
