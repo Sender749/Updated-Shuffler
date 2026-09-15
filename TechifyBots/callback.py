@@ -11,7 +11,7 @@ from .cmds import (
     _build_category_markup, _categories_list_text, _make_file_buttons,
     _get_prev_from_cache, _get_history_cache,
 )
-from .index import INDEX_TASKS, start_indexing
+from .index import INDEX_TASKS, start_indexing, MIRROR_TASKS
 from .link_generator import handle_lg_callback
 from .quicklink import handle_ql_callback
 from .admin import handle_settings_toggle
@@ -322,6 +322,32 @@ async def callback_query_handler(client, query: CallbackQuery):
             INDEX_TASKS.pop(uid, None)
             try:
                 await query.message.edit_text("❌ **Indexing Cancelled.**")
+            except Exception:
+                pass
+
+        # ==================== REELS MIRROR (channel + range picker) ====================
+
+        elif data.startswith("mirrorsel_"):
+            await query.answer()
+            channel_id = int(data.split("_")[-1])
+            try:
+                await query.message.edit_text(
+                    f"📂 **Channel selected:** `{channel_id}`\n\n"
+                    f"Forward the **last (newest) message** you want to mirror up to — with the "
+                    f"channel tag visible, not forwarded anonymously — or send its **t.me link**.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("❌ Cancel", callback_data="mirrorcancel")]
+                    ])
+                )
+            except Exception:
+                pass
+            MIRROR_TASKS[uid] = {"channel_id": channel_id, "state": "await_end"}
+
+        elif data == "mirrorcancel":
+            await query.answer("Cancelled.")
+            MIRROR_TASKS.pop(uid, None)
+            try:
+                await query.message.edit_text("❌ **Mirror Cancelled.**")
             except Exception:
                 pass
 
