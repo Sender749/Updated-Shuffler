@@ -34,7 +34,7 @@ def _client_ctx():
     )
 
 
-async def upload_file(local_path: str, key: str) -> int:
+async def upload_file(local_path: str, key: str, content_type: str = "video/mp4") -> int:
     """
     Upload a local file to the R2 bucket under `key`.
     Returns the uploaded file size in bytes on success, or -1 on failure.
@@ -54,7 +54,14 @@ async def upload_file(local_path: str, key: str) -> int:
             with open(local_path, "rb") as f:
                 await s3.upload_fileobj(
                     f, R2_BUCKET_NAME, key,
-                    ExtraArgs={"ContentType": "video/mp4"},
+                    ExtraArgs={
+                        "ContentType": content_type,
+                        # These files are content-addressed by message ID and never
+                        # change once mirrored — safe to cache at Cloudflare's edge
+                        # and in the browser for a long time. This is what makes the
+                        # 2nd+ view of any reel near-instant.
+                        "CacheControl": "public, max-age=31536000, immutable",
+                    },
                 )
         return size
     except Exception as e:
