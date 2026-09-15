@@ -86,7 +86,16 @@ async def _feed_handler(request: web.Request) -> web.Response:
     user = _verify_init_data(request.query.get("init_data", ""))
     user_id = user.get("id") if user else None
 
-    docs = await mdb.get_reels_feed(after_id=after_id, limit=limit)
+    if user_id:
+        # Verified Telegram user — server tracks what they've already been
+        # shown, so every call (including a brand-new WebApp session) gives
+        # them videos they haven't seen yet, in a fresh random order, until
+        # the whole pool has been shown at least once.
+        docs = await mdb.get_fresh_reels_for_user(user_id, limit=limit)
+    else:
+        # No verified user (e.g. opened outside Telegram) — can't remember
+        # what they've seen, so fall back to plain newest-first pagination.
+        docs = await mdb.get_reels_feed(after_id=after_id, limit=limit)
     doc_ids = [str(doc["_id"]) for doc in docs if doc.get("r2_key")]
     liked_ids = await mdb.get_liked_video_ids(user_id, doc_ids) if user_id else set()
 
