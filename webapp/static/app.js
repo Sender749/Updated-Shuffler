@@ -18,11 +18,17 @@
   let nextCursor = null;
   let loadingMore = false;
   let reachedEnd = false;
-  // Sticky for this session only: once the user taps unmute, every reel they
-  // scroll to next plays unmuted too, until they tap mute again. A fresh
-  // page load (new session) always starts back at muted — nothing here is
-  // persisted to storage on purpose, matching "always muted by default".
-  let userHasUnmuted = false;
+
+  // Single global source of truth for mute, applied to whichever video is
+  // ACTUALLY PLAYING right now (see the IntersectionObserver below) — not
+  // just baked into each video once when it's created. That's the fix: reels
+  // further down the feed get built (preloaded) before the user unmutes, so
+  // if we only set .muted at creation time, they'd stay muted forever even
+  // after the user unmutes reel #1. Applying it fresh every time a reel
+  // becomes active means every reel always reflects the latest choice.
+  // Starts muted; stays that way across a fresh page load/new user — this
+  // is intentionally not saved anywhere persistent.
+  let globallyMuted = true;
 
   function showUnavailable(message) {
     if (message) unavailableTextEl.textContent = message;
@@ -32,6 +38,25 @@
 
   function hideUnavailable() {
     unavailableEl.classList.add("hidden");
+  }
+
+  function updateMuteIcon(wrap, video) {
+    const btn = wrap.querySelector(".mute-btn");
+    if (btn) btn.textContent = video.muted ? "🔇" : "🔊";
+  }
+
+  function setGlobalMute(muted) {
+    globallyMuted = muted;
+    // Apply immediately to every reel currently in the DOM, not just the
+    // active one — so if the user somehow toggles from a button while mid-
+    // scroll, nothing is left stale.
+    feedEl.querySelectorAll(".reel").forEach((wrap) => {
+      const video = wrap.querySelector("video");
+      if (video) {
+        video.muted = globallyMuted;
+        updateMuteIcon(wrap, video);
+      }
+    });
   }
 
   // Preload budget: the currently-visible reel plus the next one get
@@ -55,12 +80,16 @@
     });
   }
 
-  // Only one video plays at a time — whichever is most in view.
+  // Only one video plays at a time — whichever is most in view. This is also
+  // where the current global mute preference gets (re-)applied, every time,
+  // regardless of when this particular video element was created.
   const observer = new IntersectionObserver((entries) => {
     entries.forEach((entry) => {
       const video = entry.target.querySelector("video");
       if (!video) return;
       if (entry.isIntersecting && entry.intersectionRatio >= 0.6) {
+        video.muted = globallyMuted;
+        updateMuteIcon(entry.target, video);
         video.play().catch(() => {});
         updatePreloadWindow(entry.target);
       } else {
@@ -93,9 +122,7 @@
     if (item.poster) video.poster = item.poster;
     video.loop = true;
     video.playsInline = true;
-    // Start muted — this is what guarantees autoplay actually fires
-    // instantly across browsers/WebViews without waiting on a user gesture.
-    video.muted = !userHasUnmuted;
+    video.muted = globallyMuted; // corrected again on activation regardless — see observer above
     video.preload = "metadata"; // upgraded to "auto" for the front of the feed by updatePreloadWindow
     video.controls = false;
 
@@ -132,13 +159,10 @@
     const muteBtn = document.createElement("button");
     muteBtn.className = "action-btn mute-btn";
     muteBtn.type = "button";
-    const renderMuteIcon = () => { muteBtn.textContent = video.muted ? "🔇" : "🔊"; };
-    renderMuteIcon();
+    muteBtn.textContent = video.muted ? "🔇" : "🔊";
     muteBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      video.muted = !video.muted;
-      if (!video.muted) userHasUnmuted = true;
-      renderMuteIcon();
+      setGlobalMute(!globallyMuted);
     });
 
     const likeBtn = document.createElement("button");
@@ -178,13 +202,9 @@
     // Tapping the video body itself still toggles mute too, same as before —
     // the button is there for a clear visual affordance, this keeps the
     // "tap anywhere" habit working alongside it.
-    wrap.addEventListener("click", () => {
-      video.muted = !video.muted;
-      if (!video.muted) userHasUnmuted = true;
-      renderMuteIcon();
-    });
+    wrap.addEventListener("click", () => setGlobalMute(!globallyMuted));
 
-    if (!userHasUnmuted) {
+    if (globallyMuted) {
       const muteHint = document.createElement("div");
       muteHint.className = "mute-hint";
       muteHint.textContent = "🔇 Tap for sound";
