@@ -196,6 +196,7 @@
     // mid-video, so a mid-play hiccup doesn't look like the app froze.
     const spinner = document.createElement("div");
     spinner.className = "reel-spinner";
+    spinner.innerHTML = '<div class="reel-spinner-ring"></div><div class="reel-spinner-label">Loading…</div>';
     const hideSpinner = () => spinner.classList.add("hidden");
     const showSpinner = () => spinner.classList.remove("hidden");
     video.addEventListener("canplay", hideSpinner);
@@ -246,12 +247,19 @@
       applyScrub(e);
     });
     function endScrub(e) {
+      if (e) e.stopPropagation();
       if (!scrubbing) return;
       scrubbing = false;
       if (wasPlayingBeforeScrub) video.play().catch(() => {});
     }
     seekWrap.addEventListener("pointerup", endScrub);
     seekWrap.addEventListener("pointercancel", endScrub);
+    // Browsers still fire a synthetic 'click' after a pointerdown/pointerup
+    // pair on the same element even when we've handled everything above —
+    // without stopping it here, that click bubbles up to the reel's
+    // tap-to-play/pause handler and accidentally pauses the video every
+    // time someone just meant to scrub. This is the actual fix for that.
+    seekWrap.addEventListener("click", (e) => e.stopPropagation());
 
     video.addEventListener("timeupdate", () => {
       if (!scrubbing && video.duration > 0) {
@@ -355,9 +363,9 @@
         await showVerifyOverlay();
         return;
       }
-      loadingEl.classList.add("hidden");
 
       if (!data.items || data.items.length === 0) {
+        loadingEl.classList.add("hidden");
         reachedEnd = true;
         if (!feedEl.children.length) {
           const empty = document.createElement("div");
@@ -371,6 +379,7 @@
       const wasEmpty = feedEl.children.length === 0;
       data.items.forEach((item) => feedEl.appendChild(buildReel(item)));
       nextCursor = data.next;
+      loadingEl.classList.add("hidden");
 
       if (wasEmpty) updatePreloadWindow(feedEl.firstElementChild);
     } catch (e) {
@@ -382,7 +391,16 @@
 
   feedEl.addEventListener("scroll", () => {
     const nearBottom = feedEl.scrollTop + feedEl.clientHeight >= feedEl.scrollHeight - window.innerHeight * 1.5;
-    if (nearBottom) loadMore();
+    if (!nearBottom) return;
+    if (verificationGated) {
+      // Cancelling the popup only closes it — it does NOT lift the gate.
+      // Trying to reach a new (not-yet-loaded) video re-shows the same
+      // popup every time, using the already-fetched verify/tutorial links
+      // so this doesn't hit the server again.
+      verifyOverlayEl.classList.remove("hidden");
+      return;
+    }
+    loadMore();
   });
 
   retryBtn.addEventListener("click", async () => {
