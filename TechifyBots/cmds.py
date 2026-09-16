@@ -274,6 +274,7 @@ async def handle_verify(client, message, data):
         return
     uid = int(parts[1])
     vid = parts[2]
+    origin = parts[3]  # "video" (DM flow) or "reels" (WebApp flow) — only changes the buttons shown below
 
     verify_info = await udb.get_verify_id_info(uid, vid)
     if not verify_info or verify_info.get("verified"):
@@ -305,10 +306,14 @@ async def handle_verify(client, message, data):
         text.VERIFIED_LOG_TEXT.format(message.from_user.mention, uid, now.strftime('%d %B %Y'), num)
     ))
 
+    buttons = [[InlineKeyboardButton("🎬 Get Video", callback_data="getvideo")]]
+    if origin == "reels" and R2_ENABLED and WEBAPP_URL:
+        buttons.append([InlineKeyboardButton("📱 Watch Reels", web_app=WebAppInfo(url=f"{WEBAPP_URL}/webapp"))])
+
     await message.reply_photo(
         photo=VERIFY_IMG,
         caption=msg.format(message.from_user.mention, get_readable_time(TWO_VERIFY_GAP)),
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎬 Get Video", callback_data="getvideo")]])
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 
