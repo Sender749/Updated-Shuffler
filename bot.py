@@ -4,6 +4,7 @@ from pytz import timezone
 from datetime import datetime
 import os
 from pyrogram import Client
+from pyrogram.types import BotCommand
 from aiohttp import web
 
 routes = web.RouteTableDef()
@@ -49,6 +50,20 @@ class Bot(Client):
         await super().start()
         me = await self.get_me()
         print(f"Bot Started as {me.first_name}")
+
+        # Registers Telegram's native "/" command menu — shown to every user
+        # when they type "/" in the chat, with a short description each.
+        # Set fresh on every startup so it's always in sync with what the
+        # bot actually supports, with no manual BotFather step needed.
+        try:
+            await self.set_bot_commands([
+                BotCommand("start", "Start the bot / open the main menu"),
+                BotCommand("getvideos", "Request a video"),
+                BotCommand("category", "Choose a video category (Premium)"),
+                BotCommand("myplan", "Check your daily limit and subscription"),
+            ])
+        except Exception as e:
+            print(f"Error setting bot commands: {e}")
 
         # Notify all admins on start
         for admin_id in ADMIN_IDS:
