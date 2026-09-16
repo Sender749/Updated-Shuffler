@@ -57,9 +57,9 @@ class Bot(Client):
         # bot actually supports, with no manual BotFather step needed.
         try:
             await self.set_bot_commands([
-                BotCommand("start", "Start the bot / open the main menu"),
-                BotCommand("getvideos", "Request a video"),
-                BotCommand("category", "Choose a video category (Premium)"),
+                BotCommand("start", "Check am i alive ?"),
+                BotCommand("getvideos", "Get Spicy videos"),
+                BotCommand("category", "Choose a video category"),
                 BotCommand("myplan", "Check your daily limit and subscription"),
             ])
         except Exception as e:
