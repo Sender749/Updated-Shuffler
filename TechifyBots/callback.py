@@ -130,10 +130,13 @@ async def callback_query_handler(client, query: CallbackQuery):
                 await query.answer("You are not my admin ❌", show_alert=True)
             else:
                 await query.answer()
-                await query.message.edit_caption(
-                    caption=text.ADMIN_COMMANDS,
+                # Sent as its own text message (not a photo caption edit) since
+                # the full command list is well over Telegram's 1024-char
+                # caption limit but comfortably fits a normal text message.
+                await query.message.reply_text(
+                    text.ADMIN_COMMANDS,
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("↩️ 𝖡𝖺𝖼𝗄", callback_data="help")]
+                        [InlineKeyboardButton("❌ 𝖢𝗅𝗈𝗌𝖾", callback_data="close")]
                     ])
                 )
 
