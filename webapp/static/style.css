@@ -48,23 +48,41 @@ html, body {
   pointer-events: none;
 }
 
-/* Small, non-blocking spinner shown over the poster frame while a reel's
-   video is still buffering — replaces a plain blank/black screen with a
+/* Loading indicator shown over the poster frame while a reel's video is
+   still buffering — replaces a plain blank/black screen with a clearly
    visible "something is happening" cue. Hidden as soon as playback can
-   start (see app.js's 'canplay'/'playing' listeners). */
+   start (see app.js's 'canplay'/'playing' listeners), shown again on
+   mid-playback stalls too. */
 .reel-spinner {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 32px;
-  height: 32px;
-  margin: -16px 0 0 -16px;
-  border: 3px solid rgba(255, 255, 255, 0.25);
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 22px 26px;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 16px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.reel-spinner-ring {
+  width: 40px;
+  height: 40px;
+  border: 4px solid rgba(255, 255, 255, 0.3);
   border-top-color: #fff;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
-  pointer-events: none;
-  z-index: 2;
+}
+
+.reel-spinner-label {
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
 }
 
 .reel-spinner.hidden {
