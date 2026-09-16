@@ -110,6 +110,41 @@ class Database:
         )
         return {"allowed": True, "plan": "free", "count": new_count, "limit": free_limit}
 
+    async def check_and_increment_reels_usage(self, user_id: int, requested: int) -> dict:
+        """
+        Same idea as check_and_increment_usage, but for the WebApp reels
+        feed, with its own separate counter/limit (REELS_FREE_LIMIT) and its
+        own granularity: since one feed request can hand out several videos
+        at once, this reports how many of the `requested` count are actually
+        still within today's free quota — 'serve' may be less than
+        `requested` (a partial batch right at the limit) or 0 (already over).
+        Prime users are unlimited, same as the DM flow.
+        """
+        from vars import REELS_FREE_LIMIT
+        user = await self.get_user(user_id)
+        plan = (user or {}).get("plan", "free")
+        if plan == "prime":
+            return {"allowed": True, "serve": requested, "count": None, "limit": None}
+
+        today = datetime.now()
+        last_request = (user or {}).get("reels_last_request_date")
+        daily_count = (user or {}).get("reels_daily_count", 0)
+        if last_request and last_request.strftime("%Y-%m-%d") != today.strftime("%Y-%m-%d"):
+            daily_count = 0
+
+        remaining = max(0, REELS_FREE_LIMIT - daily_count)
+        if remaining <= 0:
+            return {"allowed": False, "serve": 0, "count": daily_count, "limit": REELS_FREE_LIMIT}
+
+        serve = min(requested, remaining)
+        new_count = daily_count + serve
+        await self.async_user_collection.update_one(
+            {"_id": user_id},
+            {"$set": {"reels_daily_count": new_count, "reels_last_request_date": today}},
+            upsert=True,
+        )
+        return {"allowed": True, "serve": serve, "count": new_count, "limit": REELS_FREE_LIMIT}
+
     async def update_global_limit(self, limit_type, new_value):
         if limit_type == "free":
             await asyncio.gather(
