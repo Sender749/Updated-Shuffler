@@ -72,39 +72,37 @@ class text(object):
     # still does text.PRO.format(free_limit=...).  The dynamic version is preferred.
     PRO = ""  # populated dynamically; see callback.py which calls _build_pro_text()
 
-    ADMIN_COMMANDS = """<b><u>⭐ Admin Commands</u>
-                                      
-» /setlimit — Update the daily usage limit for free users.
+    ADMIN_COMMANDS = """<b><u>⭐ Admin Commands</u></b>
 
+<b><u>Limits & Users</u></b>
+» /setlimit {new_free_limit} — Update the daily usage limit for free users.
 » /resetlimits — Reset the daily count to 0 for all free users.
+» /prime {user_id} {duration} — Add a user to Prime (e.g. /prime 123456789 2d — units: s/m/h/d/y).
+» /remove {user_id} — Remove a user from Prime membership.
+» /ban {user_id} — Ban a specific user.
+» /unban {user_id} — Unban a specific user.
+» /banlist — List all banned users.
 
-» /index — Manually index videos from database channels.
+<b><u>Videos & Indexing</u></b>
+» /index — Pick a channel and manually index its videos.
+» /fix_index — One-time repair for old docs missing a channel ID (safe to re-run).
+» /delete {link|post_id|link_id|video_id} — Delete file(s); comma-separate multiple targets.
+» /deleteall — Delete every video from the database.
 
-» /maintenance — Toggle maintenance mode ON or OFF.
+<b><u>Reels WebApp / R2</u></b>
+» /mirrorexisting — Pick a channel + message-ID range to mirror to Cloudflare R2 for reels (has a Stop button while running).
+» /r2check — Test your R2 credentials/bucket connection and show which endpoint it's using.
 
-» /settings — Toggle Verification, Protect Content, Premium Can Download, Force Sub, and Premium Membership from the bot DM.
+<b><u>Sharing & Links</u></b>
+» /l — Start a share-link session for one or more files (supports collages).
+» /m_link — Generate the link after sending files with /l.
+» /s {link} — Shorten a link through your configured shortener domains.
 
-» /prime — Add a user to the Prime membership.
-
-» /remove — Remove a user from Prime membership.
-
-» /deleteall — Delete all videos from the database.
-
-» /delete — Delete a specific video using its Telegram message ID.
-
-» /broadcast — Send a message broadcast to all users.
-
-» /ban — Ban a specific user.
-
-» /unban — Unban a specific user.
-
-» /banlist — To check banned Users.
-
-» /stats — View detailed bot statistics.
-
-» /l — Start generating a shareable link for files (supports collage).
-
-» /m_link — Generate link after collecting files.</b>"""
+<b><u>Bot Control</u></b>
+» /settings — Toggle Verification, Protect Content, Premium Can Download, Force Sub, Premium Membership, and Reels WebApp.
+» /maintenance {on|off} — Toggle maintenance mode.
+» /broadcast — Reply to a message with this to send it to every user.
+» /stats — View detailed bot statistics (users, files, channels, R2 usage).</b>"""
 
     HELP = """<b>𝖡𝗈𝗍 𝖣𝗂𝗌𝖼𝗅𝖺𝗂𝗆𝖾𝗋 & 𝖴𝗌𝖺𝗀𝖾 𝖦𝗎𝗂𝖽𝖾:</b>
 
