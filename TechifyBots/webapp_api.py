@@ -86,6 +86,26 @@ async def _feed_handler(request: web.Request) -> web.Response:
     user = _verify_init_data(request.query.get("init_data", ""))
     user_id = user.get("id") if user else None
 
+    if settings.get("is_verify", True):
+        # Same verification system as the bot's DM flow (same "verified"
+        # status/expiry) — just with its own separate free-play counter.
+        if not user_id:
+            # Can't safely count/gate someone we can't identify, and they
+            # couldn't complete verification without a real Telegram
+            # account anyway — treat as gated rather than letting it bypass.
+            return web.json_response(
+                {"enabled": True, "verification_required": True, "items": [], "next": None}
+            )
+        from Database.userdb import udb
+        verified = await udb.is_user_verified(user_id)
+        if not verified:
+            usage = await mdb.check_and_increment_reels_usage(user_id, limit)
+            if usage["serve"] <= 0:
+                return web.json_response(
+                    {"enabled": True, "verification_required": True, "items": [], "next": None}
+                )
+            limit = usage["serve"]  # cap this batch to whatever's left of today's free quota
+
     if user_id:
         # Verified Telegram user — server tracks what they've already been
         # shown, so every call (including a brand-new WebApp session) gives
@@ -140,11 +160,40 @@ async def _like_handler(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def _verify_info_handler(request: web.Request) -> web.Response:
+    """Called by the WebApp once it hits the verification gate — generates a
+    fresh shortlink (same shortener/verify-id system as the bot's DM flow)
+    and hands back the tutorial link too, for the Verify / How to verify
+    buttons in the popup."""
+    user = _verify_init_data(request.query.get("init_data", ""))
+    if not user:
+        return web.json_response({"error": "auth_required"}, status=401)
+
+    import random
+    import string
+    from Database.userdb import udb
+    from TechifyBots.utils import get_shortlink
+    from vars import TUTORIAL
+
+    user_id = user["id"]
+    vid = "".join(random.choices(string.ascii_uppercase + string.digits, k=7))
+
+    from bot import bot  # safe here — only ever called at request time, well after bot.py finishes loading
+    bot_info = await bot.get_me()
+    deep_link = f"https://telegram.me/{bot_info.username}?start=verify_{user_id}_{vid}_reels"
+
+    await udb.create_verify_id(user_id, vid)
+    short = await get_shortlink(deep_link, False, False)  # reels always uses the first-tier shortener
+
+    return web.json_response({"verify_url": short, "tutorial_url": TUTORIAL})
+
+
 def register_webapp_routes(routes: web.RouteTableDef) -> None:
     """Call once from bot.py before `app.add_routes(routes)`."""
     routes.get("/webapp/api/status")(_status_handler)
     routes.get("/webapp/api/feed")(_feed_handler)
     routes.post("/webapp/api/like")(_like_handler)
+    routes.get("/webapp/api/verify-info")(_verify_info_handler)
     routes.get("/webapp")(_index_handler)
     routes.get("/webapp/")(_index_handler)
     if os.path.isdir(WEBAPP_ASSETS_DIR):
