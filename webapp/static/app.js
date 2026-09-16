@@ -9,26 +9,38 @@
     try { tg.setHeaderColor("#000000"); tg.setBackgroundColor("#000000"); } catch (e) {}
   }
 
+  function openExternal(url) {
+    if (!url) return;
+    if (tg && tg.openLink) tg.openLink(url);
+    else window.open(url, "_blank");
+  }
+
   const feedEl = document.getElementById("feed");
   const loadingEl = document.getElementById("loading");
   const unavailableEl = document.getElementById("unavailable");
   const unavailableTextEl = document.getElementById("unavailable-text");
   const retryBtn = document.getElementById("retry-btn");
+  const verifyOverlayEl = document.getElementById("verify-overlay");
+  const verifyBtn = document.getElementById("verify-btn");
+  const verifyHowtoBtn = document.getElementById("verify-howto-btn");
+  const verifyCancelBtn = document.getElementById("verify-cancel-btn");
 
   let nextCursor = null;
   let loadingMore = false;
   let reachedEnd = false;
+  let verificationGated = false; // true once the feed says we need to verify — stops further loadMore() calls
 
   // Single global source of truth for mute, applied to whichever video is
   // ACTUALLY PLAYING right now (see the IntersectionObserver below) — not
-  // just baked into each video once when it's created. That's the fix: reels
-  // further down the feed get built (preloaded) before the user unmutes, so
-  // if we only set .muted at creation time, they'd stay muted forever even
-  // after the user unmutes reel #1. Applying it fresh every time a reel
-  // becomes active means every reel always reflects the latest choice.
-  // Starts muted; stays that way across a fresh page load/new user — this
-  // is intentionally not saved anywhere persistent.
+  // just baked into each video once when it's created, since reels further
+  // down the feed get built (preloaded) before the user unmutes.
   let globallyMuted = true;
+
+  // ── tiny inline icon set (outline by default, filled when active) ─────────
+  const ICON_HEART = '<svg viewBox="0 0 24 24" class="icon-svg"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>';
+  const ICON_SPEAKER_BASE = '<path d="M4 9v6h4l5 5V4L8 9H4z"/>';
+  const ICON_SPEAKER_MUTED = `<svg viewBox="0 0 24 24" class="icon-svg">${ICON_SPEAKER_BASE}<line x1="21" y1="4" x2="4" y2="21" class="icon-slash"/></svg>`;
+  const ICON_SPEAKER_ON = `<svg viewBox="0 0 24 24" class="icon-svg">${ICON_SPEAKER_BASE}<path d="M15.5 8.5a5 5 0 010 7" class="icon-wave"/><path d="M18.3 5.7a9 9 0 010 12.6" class="icon-wave"/></svg>`;
 
   function showUnavailable(message) {
     if (message) unavailableTextEl.textContent = message;
@@ -40,16 +52,54 @@
     unavailableEl.classList.add("hidden");
   }
 
+  let verifyInfoCache = null;
+  async function fetchVerifyInfo() {
+    try {
+      const url = new URL("/webapp/api/verify-info", window.location.origin);
+      if (INIT_DATA) url.searchParams.set("init_data", INIT_DATA);
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function showVerifyOverlay() {
+    verificationGated = true;
+    loadingEl.classList.add("hidden");
+    verifyOverlayEl.classList.remove("hidden");
+    verifyInfoCache = await fetchVerifyInfo();
+  }
+
+  function hideVerifyOverlay() {
+    verifyOverlayEl.classList.add("hidden");
+  }
+
+  verifyBtn.addEventListener("click", async () => {
+    if (!verifyInfoCache) verifyInfoCache = await fetchVerifyInfo();
+    if (verifyInfoCache && verifyInfoCache.verify_url) openExternal(verifyInfoCache.verify_url);
+  });
+  verifyHowtoBtn.addEventListener("click", async () => {
+    if (!verifyInfoCache) verifyInfoCache = await fetchVerifyInfo();
+    if (verifyInfoCache && verifyInfoCache.tutorial_url) openExternal(verifyInfoCache.tutorial_url);
+  });
+  verifyCancelBtn.addEventListener("click", () => {
+    // Closes the popup only. Already-loaded reels stay watchable; scrolling
+    // to ask for a NEW one will re-trigger this same popup, same as hitting
+    // the limit fresh — matches "user needs to try again to see it again."
+    hideVerifyOverlay();
+  });
+
   function updateMuteIcon(wrap, video) {
     const btn = wrap.querySelector(".mute-btn");
-    if (btn) btn.textContent = video.muted ? "🔇" : "🔊";
+    if (!btn) return;
+    btn.innerHTML = video.muted ? ICON_SPEAKER_MUTED : ICON_SPEAKER_ON;
+    btn.classList.toggle("active", !video.muted);
   }
 
   function setGlobalMute(muted) {
     globallyMuted = muted;
-    // Apply immediately to every reel currently in the DOM, not just the
-    // active one — so if the user somehow toggles from a button while mid-
-    // scroll, nothing is left stale.
     feedEl.querySelectorAll(".reel").forEach((wrap) => {
       const video = wrap.querySelector("video");
       if (video) {
@@ -57,6 +107,22 @@
         updateMuteIcon(wrap, video);
       }
     });
+  }
+
+  // Brief center play/pause icon flash on tap, like most video apps give as
+  // feedback so a tap doesn't feel like it did nothing.
+  function flashPauseIcon(wrap, isPaused) {
+    let flash = wrap.querySelector(".tap-flash");
+    if (!flash) {
+      flash = document.createElement("div");
+      flash.className = "tap-flash";
+      wrap.appendChild(flash);
+    }
+    flash.textContent = isPaused ? "❚❚" : "▶";
+    flash.classList.remove("show");
+    // Force reflow so the animation restarts on rapid repeat taps.
+    void flash.offsetWidth;
+    flash.classList.add("show");
   }
 
   // Preload budget: the currently-visible reel plus the next one get
@@ -81,7 +147,7 @@
   }
 
   // Only one video plays at a time — whichever is most in view. This is also
-  // where the current global mute preference gets (re-)applied, every time,
+  // where the current global mute preference gets (re-)applied every time,
   // regardless of when this particular video element was created.
   const observer = new IntersectionObserver((entries) => {
     entries.forEach((entry) => {
@@ -127,8 +193,7 @@
     video.controls = false;
 
     // Buffering spinner — shown initially AND whenever playback stalls
-    // mid-video (not just before the first frame), so a mid-play hiccup
-    // doesn't look like the app froze.
+    // mid-video, so a mid-play hiccup doesn't look like the app froze.
     const spinner = document.createElement("div");
     spinner.className = "reel-spinner";
     const hideSpinner = () => spinner.classList.add("hidden");
@@ -138,20 +203,63 @@
     video.addEventListener("waiting", showSpinner);
     video.addEventListener("stalled", showSpinner);
 
-    // Thin progress line along the bottom — no numbers, just a bar that
-    // fills as the video plays, resetting each loop.
-    const progressTrack = document.createElement("div");
-    progressTrack.className = "progress-track";
-    const progressFill = document.createElement("div");
-    progressFill.className = "progress-fill";
-    progressTrack.appendChild(progressFill);
+    // ── seek bar: sits a bit clear of the very bottom edge (so it isn't
+    // where phone system gestures/screen-protector dead zones live), with a
+    // much taller invisible touch target than its visible thin line, and
+    // supports press-and-drag to scrub forward/back.
+    const seekWrap = document.createElement("div");
+    seekWrap.className = "seek-wrap";
+    const seekTrack = document.createElement("div");
+    seekTrack.className = "progress-track";
+    const seekFill = document.createElement("div");
+    seekFill.className = "progress-fill";
+    seekTrack.appendChild(seekFill);
+    seekWrap.appendChild(seekTrack);
+
+    let scrubbing = false;
+    let wasPlayingBeforeScrub = false;
+
+    function fractionFromEvent(e) {
+      const rect = seekTrack.getBoundingClientRect();
+      const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+      return Math.min(1, Math.max(0, x / rect.width));
+    }
+
+    function applyScrub(e) {
+      if (!video.duration) return;
+      const frac = fractionFromEvent(e);
+      seekFill.style.width = `${frac * 100}%`;
+      video.currentTime = frac * video.duration;
+    }
+
+    seekWrap.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      scrubbing = true;
+      wasPlayingBeforeScrub = !video.paused;
+      video.pause();
+      seekWrap.setPointerCapture(e.pointerId);
+      applyScrub(e);
+    });
+    seekWrap.addEventListener("pointermove", (e) => {
+      if (!scrubbing) return;
+      e.stopPropagation();
+      applyScrub(e);
+    });
+    function endScrub(e) {
+      if (!scrubbing) return;
+      scrubbing = false;
+      if (wasPlayingBeforeScrub) video.play().catch(() => {});
+    }
+    seekWrap.addEventListener("pointerup", endScrub);
+    seekWrap.addEventListener("pointercancel", endScrub);
+
     video.addEventListener("timeupdate", () => {
-      if (video.duration > 0) {
-        progressFill.style.width = `${(video.currentTime / video.duration) * 100}%`;
+      if (!scrubbing && video.duration > 0) {
+        seekFill.style.width = `${(video.currentTime / video.duration) * 100}%`;
       }
     });
 
-    // Right-side action buttons — mute toggle + like — transparent
+    // ── right-side action buttons — mute toggle + like — transparent
     // background, stacked vertically, mid-right of the screen.
     const actions = document.createElement("div");
     actions.className = "side-actions";
@@ -159,7 +267,7 @@
     const muteBtn = document.createElement("button");
     muteBtn.className = "action-btn mute-btn";
     muteBtn.type = "button";
-    muteBtn.textContent = video.muted ? "🔇" : "🔊";
+    muteBtn.innerHTML = video.muted ? ICON_SPEAKER_MUTED : ICON_SPEAKER_ON;
     muteBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       setGlobalMute(!globallyMuted);
@@ -171,9 +279,8 @@
     let liked = !!item.liked;
     let count = item.likes || 0;
     const renderLike = () => {
-      likeBtn.innerHTML =
-        `<span class="like-icon${liked ? " liked" : ""}">${liked ? "❤️" : "🤍"}</span>` +
-        `<span class="like-count">${count}</span>`;
+      likeBtn.innerHTML = ICON_HEART + `<span class="like-count">${count}</span>`;
+      likeBtn.classList.toggle("active", liked);
     };
     renderLike();
     likeBtn.addEventListener("click", async (e) => {
@@ -199,15 +306,22 @@
     actions.appendChild(muteBtn);
     actions.appendChild(likeBtn);
 
-    // Tapping the video body itself still toggles mute too, same as before —
-    // the button is there for a clear visual affordance, this keeps the
-    // "tap anywhere" habit working alongside it.
-    wrap.addEventListener("click", () => setGlobalMute(!globallyMuted));
+    // Tapping the video body now toggles play/pause (mute has its own
+    // dedicated button above).
+    wrap.addEventListener("click", () => {
+      if (video.paused) {
+        video.play().catch(() => {});
+        flashPauseIcon(wrap, false);
+      } else {
+        video.pause();
+        flashPauseIcon(wrap, true);
+      }
+    });
 
     if (globallyMuted) {
       const muteHint = document.createElement("div");
       muteHint.className = "mute-hint";
-      muteHint.textContent = "🔇 Tap for sound";
+      muteHint.textContent = "🔇 Tap the speaker for sound";
       wrap.appendChild(muteHint);
       video.addEventListener("volumechange", () => {
         if (!video.muted) muteHint.remove();
@@ -217,13 +331,13 @@
     wrap.appendChild(video);
     wrap.appendChild(spinner);
     wrap.appendChild(actions);
-    wrap.appendChild(progressTrack);
+    wrap.appendChild(seekWrap);
     observer.observe(wrap);
     return wrap;
   }
 
   async function loadMore() {
-    if (loadingMore || reachedEnd) return;
+    if (loadingMore || reachedEnd || verificationGated) return;
     loadingMore = true;
     try {
       const url = new URL("/webapp/api/feed", window.location.origin);
@@ -235,6 +349,10 @@
       if (res.status === 503 || !data.enabled) {
         showUnavailable(data.message);
         reachedEnd = true;
+        return;
+      }
+      if (data.verification_required) {
+        await showVerifyOverlay();
         return;
       }
       loadingEl.classList.add("hidden");
@@ -254,12 +372,8 @@
       data.items.forEach((item) => feedEl.appendChild(buildReel(item)));
       nextCursor = data.next;
 
-      // First load: immediately start eager-loading the first two reels
-      // rather than waiting for a scroll/intersection event to fire.
       if (wasEmpty) updatePreloadWindow(feedEl.firstElementChild);
     } catch (e) {
-      // Network hiccup — don't show the "turned off" popup for this, just
-      // let the user retry by scrolling again.
       console.error("[reels] feed load failed", e);
     } finally {
       loadingMore = false;
@@ -281,7 +395,7 @@
   });
 
   // Single request on load — the feed endpoint itself reports whether the
-  // WebApp is enabled, so there's no separate /api/status round trip before
-  // anything can appear on screen.
+  // WebApp is enabled (and whether verification is needed), so there's no
+  // separate round trip before anything can appear on screen.
   loadMore();
 })();
