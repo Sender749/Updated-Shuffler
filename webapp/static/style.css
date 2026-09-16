@@ -102,8 +102,6 @@ html, body {
   background: transparent;
   border: none;
   color: #fff;
-  font-size: 28px;
-  line-height: 1;
   padding: 6px;
   display: flex;
   flex-direction: column;
@@ -115,13 +113,41 @@ html, body {
   filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.6));
 }
 
-.like-icon {
-  display: block;
+/* Icons: transparent/outline by default, filled with a light colour once
+   active (unmuted / liked). Heart uses one shared SVG with its fill toggled
+   by .active; the speaker swaps between two SVG variants in app.js, so its
+   outline/filled styling comes from the base rule + the colour rule below. */
+.icon-svg {
+  width: 30px;
+  height: 30px;
+  fill: none;
+  stroke: #fff;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
   transition: transform 0.15s ease;
 }
 
-.like-icon.liked {
-  transform: scale(1.15);
+.action-btn.active .icon-svg {
+  transform: scale(1.12);
+}
+
+.like-btn.active .icon-svg {
+  fill: #ff5c72;
+  stroke: #ff5c72;
+}
+
+.mute-btn.active .icon-svg {
+  fill: #7ec8ff;
+  stroke: #7ec8ff;
+}
+
+.icon-slash {
+  stroke: #fff;
+}
+
+.icon-wave {
+  fill: none;
 }
 
 .like-count {
@@ -130,21 +156,59 @@ html, body {
   color: #fff;
 }
 
-/* Thin progress line along the very bottom of each reel — just a bar that
-   fills as the video plays, no time/duration numbers. */
-.progress-track {
+/* Tap-to-play/pause feedback: a big icon that briefly flashes in the center
+   of the screen, same idea as most video apps use so a tap doesn't feel
+   like it did nothing. */
+.tap-flash {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 3px;
-  background: rgba(255, 255, 255, 0.25);
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.8);
+  color: #fff;
+  font-size: 46px;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 4;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.6));
+}
+
+.tap-flash.show {
+  animation: tapFlash 0.5s ease-out;
+}
+
+@keyframes tapFlash {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
+  25% { opacity: 0.9; transform: translate(-50%, -50%) scale(1.1); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1.1); }
+}
+
+/* Seek bar: a draggable scrubber, positioned up from the very bottom edge
+   on purpose — right at the edge is where phone system-gesture zones (back-
+   swipe, home-indicator swipe-up) and screen-protector dead spots live, so
+   a bar flush against it is hard to grab reliably. The visible line stays
+   thin; the actual touch target (seek-wrap) is much taller via padding, so
+   fingers don't need pixel-perfect accuracy to grab it. */
+.seek-wrap {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 34px;
+  padding: 14px 0;
   z-index: 3;
+  touch-action: none;
+}
+
+.progress-track {
+  position: relative;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .progress-fill {
   height: 100%;
   width: 0%;
+  border-radius: 2px;
   background: #fff;
 }
 
@@ -198,6 +262,17 @@ html, body {
   padding: 10px 24px;
   font-size: 15px;
   font-weight: 600;
+  width: 100%;
+  display: block;
+}
+
+.popup-btn + .popup-btn {
+  margin-top: 10px;
+}
+
+.popup-btn-secondary {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
 }
 
 .empty-state {
