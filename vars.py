@@ -78,21 +78,52 @@ CATEGORY_BUTTONS_PER_ROW: int = 2
 PREMIUM_CAN_DOWNLOAD: bool = os.getenv("PREMIUM_CAN_DOWNLOAD", "True").lower() == "true"
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── Reels WebApp / Cloudflare R2 ─────────────────────────────────────────────
-# All of these are optional — if the R2_* credentials are missing, the whole
-# feature quietly disables itself (no WebApp button, no mirroring, no crashes).
-R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "444fb8381f5432bc3ae6a0123b53e4d4")
-R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "01b8738c4439fd941efcd5657e37bc4d")
-R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "4788cb01f879a15daf0d6d8d8e410394a1b0610c1ea98a74b1358bc79d9f576b")
-R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "reels-videos")
-R2_JURISDICTION = os.getenv("R2_JURISDICTION", "us").strip().lower()
-R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL", "https://pub-babd88c1825d4f4c9bb30bcf13f8aa62.r2.dev").rstrip("/")
-R2_ENABLED: bool = bool(R2_ACCOUNT_ID and R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY and R2_BUCKET_NAME)
+# ── Reels WebApp / Cloudflare R2 (multi-account pool) ────────────────────────
+# Add more storage without touching code: set R2_ACCOUNT_ID_2 / R2_ACCESS_KEY_ID_2
+# / R2_SECRET_ACCESS_KEY_2 / R2_BUCKET_NAME_2 / R2_PUBLIC_BASE_URL_2 (and _3, _4,
+# ... as needed) on Koyeb and redeploy — that's it, no code change. Each numbered
+# set is a separate Cloudflare account/bucket, each with its own free 10GB tier.
+# The bot fills api1 first, then automatically moves to api2 once api1 is full,
+# and so on. Account "1" also accepts the original unsuffixed R2_ACCOUNT_ID etc.
+# vars, so an existing single-account setup keeps working with zero changes.
+def _load_r2_accounts():
+    accounts = []
+    idx = 1
+    while idx <= 20:  # sane upper bound, not a real limit anyone should hit
+        suf = f"_{idx}"
+        is_first = idx == 1
+        acc_id = os.getenv(f"R2_ACCOUNT_ID{suf}") or (os.getenv("R2_ACCOUNT_ID") if is_first else None)
+        if not acc_id:
+            break  # stop at the first gap — api3 won't be looked for if api2 is missing
+        access_key = os.getenv(f"R2_ACCESS_KEY_ID{suf}") or (os.getenv("R2_ACCESS_KEY_ID") if is_first else None)
+        secret_key = os.getenv(f"R2_SECRET_ACCESS_KEY{suf}") or (os.getenv("R2_SECRET_ACCESS_KEY") if is_first else None)
+        bucket = os.getenv(f"R2_BUCKET_NAME{suf}") or (os.getenv("R2_BUCKET_NAME") if is_first else None)
+        public_url = (os.getenv(f"R2_PUBLIC_BASE_URL{suf}") or (os.getenv("R2_PUBLIC_BASE_URL") if is_first else "") or "").rstrip("/")
+        jurisdiction = (os.getenv(f"R2_JURISDICTION{suf}") or (os.getenv("R2_JURISDICTION") if is_first else "") or "").strip().lower()
+        free_gb = float(os.getenv(f"R2_FREE_STORAGE_GB{suf}", os.getenv("R2_FREE_STORAGE_GB", "10")))
+        if access_key and secret_key and bucket and public_url:
+            accounts.append({
+                "id": f"api{idx}",
+                "account_id": acc_id,
+                "access_key_id": access_key,
+                "secret_access_key": secret_key,
+                "bucket_name": bucket,
+                "public_base_url": public_url,
+                "jurisdiction": jurisdiction,
+                "free_storage_gb": free_gb,
+            })
+        idx += 1
+    return accounts
+
+
+R2_ACCOUNTS = _load_r2_accounts()
+R2_ACCOUNTS_BY_ID = {a["id"]: a for a in R2_ACCOUNTS}
+R2_ENABLED: bool = len(R2_ACCOUNTS) > 0
 
 # Public URL this bot's own web server (bot.py's aiohttp app) is reachable at,
 # e.g. your Koyeb service URL "https://your-app.koyeb.app". Used to build the
 # WebApp button and to serve the reels feed API + static WebApp files.
-WEBAPP_URL = os.getenv("WEBAPP_URL", "https://comparable-noni-naha-cbe8eb81.koyeb.app/").rstrip("/")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "").rstrip("/")
 
 # Only videos at or under this length (seconds) get mirrored to R2 for the
 # reels feed — longer videos stay DM-only. This is the main lever for keeping
@@ -106,10 +137,9 @@ REELS_MAX_DURATION = int(os.getenv("REELS_MAX_DURATION", "90"))
 REELS_MAX_HEIGHT = int(os.getenv("REELS_MAX_HEIGHT", "720"))
 REELS_TARGET_BITRATE_KBPS = int(os.getenv("REELS_TARGET_BITRATE_KBPS", "1500"))
 
-# R2's free tier is 10GB storage with zero egress fees. We track our own
-# cumulative upload size (see Database/maindb.py) and alert the admins in DM
-# once usage crosses this percentage, so they can flip the WebApp off before
-# any paid usage is incurred.
-R2_FREE_STORAGE_GB = float(os.getenv("R2_FREE_STORAGE_GB", "10"))
+# Each account's free tier is tracked independently (see Database/maindb.py) —
+# admins get a DM once any single account crosses this percentage of ITS OWN
+# free_storage_gb, and a separate, more urgent DM once every configured
+# account is full and mirroring has actually stopped.
 R2_ALERT_THRESHOLD_PERCENT = float(os.getenv("R2_ALERT_THRESHOLD_PERCENT", "85"))
 # ─────────────────────────────────────────────────────────────────────────────
