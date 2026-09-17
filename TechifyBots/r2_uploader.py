@@ -1,48 +1,63 @@
 """
-Cloudflare R2 upload helper for the Reels WebApp feature.
+Cloudflare R2 upload helper for the Reels WebApp feature — multi-account
+pool version. R2 is S3-API-compatible, so we use aioboto3 (async boto3) with
+R2's endpoint, one client per configured account (see vars.R2_ACCOUNTS).
 
-R2 is S3-API-compatible, so we use aioboto3 (async boto3) with R2's endpoint.
-This module is intentionally self-contained and never raises out of its public
-functions — indexing must keep working even if R2 is unreachable/misconfigured.
+This module is intentionally defensive — indexing must keep working even if
+R2 is unreachable/misconfigured, so public functions never raise.
 """
+
+import os
 
 import aioboto3
 from botocore.config import Config as BotoConfig
-from vars import (
-    R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
-    R2_BUCKET_NAME, R2_ENABLED, R2_JURISDICTION,
-)
-
-if R2_ACCOUNT_ID and R2_JURISDICTION:
-    _R2_ENDPOINT = f"https://{R2_ACCOUNT_ID}.{R2_JURISDICTION}.r2.cloudflarestorage.com"
-elif R2_ACCOUNT_ID:
-    _R2_ENDPOINT = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-else:
-    _R2_ENDPOINT = ""
+from vars import R2_ACCOUNTS, R2_ENABLED
 
 _session = aioboto3.Session()
 
 
-def _client_ctx():
-    """Return an async-context-manager R2 client. Caller must `async with` it."""
+def _endpoint_for(account: dict) -> str:
+    if account.get("jurisdiction"):
+        return f"https://{account['account_id']}.{account['jurisdiction']}.r2.cloudflarestorage.com"
+    return f"https://{account['account_id']}.r2.cloudflarestorage.com"
+
+
+def _client_ctx(account: dict):
+    """Return an async-context-manager R2 client for one specific account.
+    Caller must `async with` it."""
     return _session.client(
         "s3",
-        endpoint_url=_R2_ENDPOINT,
-        aws_access_key_id=R2_ACCESS_KEY_ID,
-        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+        endpoint_url=_endpoint_for(account),
+        aws_access_key_id=account["access_key_id"],
+        aws_secret_access_key=account["secret_access_key"],
         config=BotoConfig(signature_version="s3v4", retries={"max_attempts": 3}),
     )
 
 
-async def upload_file(local_path: str, key: str, content_type: str = "video/mp4") -> int:
+async def pick_account_with_room() -> dict:
     """
-    Upload a local file to the R2 bucket under `key`.
+    Returns the first configured account (in api1, api2, api3... order) that
+    still has headroom under its own free_storage_gb, or None if every
+    configured account is full. This is what makes the pool "automatic" —
+    callers never need to know which account they're writing to.
+    """
+    from Database.maindb import mdb
+    for account in R2_ACCOUNTS:
+        usage = await mdb.get_r2_usage(account["id"])
+        limit_bytes = account["free_storage_gb"] * (1024 ** 3)
+        if usage["total_bytes"] < limit_bytes:
+            return account
+    return None
+
+
+async def upload_file(account: dict, local_path: str, key: str, content_type: str = "video/mp4") -> int:
+    """
+    Upload a local file to the given account's bucket under `key`.
     Returns the uploaded file size in bytes on success, or -1 on failure.
     Never raises — callers treat -1 as "mirror failed, try again later".
     """
-    if not R2_ENABLED:
+    if not R2_ENABLED or not account:
         return -1
-    import os
     try:
         size = os.path.getsize(local_path)
     except OSError as e:
@@ -50,10 +65,10 @@ async def upload_file(local_path: str, key: str, content_type: str = "video/mp4"
         return -1
 
     try:
-        async with _client_ctx() as s3:
+        async with _client_ctx(account) as s3:
             with open(local_path, "rb") as f:
                 await s3.upload_fileobj(
-                    f, R2_BUCKET_NAME, key,
+                    f, account["bucket_name"], key,
                     ExtraArgs={
                         "ContentType": content_type,
                         # These files are content-addressed by message ID and never
@@ -65,38 +80,38 @@ async def upload_file(local_path: str, key: str, content_type: str = "video/mp4"
                 )
         return size
     except Exception as e:
-        print(f"[r2_uploader] upload failed for key={key}: {e}")
+        print(f"[r2_uploader] upload failed for key={key} on {account['id']}: {e}")
         return -1
 
 
-async def delete_file(key: str) -> bool:
-    """Delete an object from the R2 bucket. Returns True on success."""
-    if not R2_ENABLED:
+async def delete_file(account: dict, key: str) -> bool:
+    """Delete an object from the given account's bucket. Returns True on success."""
+    if not R2_ENABLED or not account:
         return False
     try:
-        async with _client_ctx() as s3:
-            await s3.delete_object(Bucket=R2_BUCKET_NAME, Key=key)
+        async with _client_ctx(account) as s3:
+            await s3.delete_object(Bucket=account["bucket_name"], Key=key)
         return True
     except Exception as e:
-        print(f"[r2_uploader] delete failed for key={key}: {e}")
+        print(f"[r2_uploader] delete failed for key={key} on {account['id']}: {e}")
         return False
 
 
-async def test_connection() -> tuple:
-    """Lightweight credential/permission check for /r2check.
-    Tests the actual operations the upload path uses (PutObject/DeleteObject)
-    rather than HeadBucket — R2 tokens scoped to "Object Read & Write" often
-    don't include bucket-level permissions, only object-level ones, so a
-    HeadBucket check can fail even when real uploads would succeed.
-    Returns (ok: bool, detail: str)."""
-    if not R2_ENABLED:
-        return False, "R2_* env vars are missing — feature is disabled."
+async def test_connection(account: dict) -> tuple:
+    """Lightweight credential/permission check for /r2check, for ONE account.
+    Tests the actual operations the upload path uses (PutObject/GetObject/
+    DeleteObject) rather than HeadBucket — R2 tokens scoped to "Object Read &
+    Write" often don't include bucket-level permissions, only object-level
+    ones, so a HeadBucket check can fail even when real uploads would
+    succeed. Returns (ok: bool, detail: str)."""
+    if not account:
+        return False, "Not configured."
     test_key = "_r2check_test.txt"
     try:
-        async with _client_ctx() as s3:
-            await s3.put_object(Bucket=R2_BUCKET_NAME, Key=test_key, Body=b"ok")
-            await s3.get_object(Bucket=R2_BUCKET_NAME, Key=test_key)
-            await s3.delete_object(Bucket=R2_BUCKET_NAME, Key=test_key)
+        async with _client_ctx(account) as s3:
+            await s3.put_object(Bucket=account["bucket_name"], Key=test_key, Body=b"ok")
+            await s3.get_object(Bucket=account["bucket_name"], Key=test_key)
+            await s3.delete_object(Bucket=account["bucket_name"], Key=test_key)
         return True, "Write + read + delete all succeeded."
     except Exception as e:
         code = ""
