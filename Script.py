@@ -91,7 +91,8 @@ class text(object):
 
 <b><u>Reels WebApp / R2</u></b>
 » /mirrorexisting — Pick a channel + message-ID range to mirror to Cloudflare R2 for reels (has a Stop button while running).
-» /r2check — Test your R2 credentials/bucket connection and show which endpoint it's using.
+» /mirrorindex — Toggle automatic reels-mirroring on/off per channel (doesn't affect /mirrorexisting).
+» /r2check — Test every configured R2 account's credentials/bucket connection.
 
 <b><u>Sharing & Links</u></b>
 » /l — Start a share-link session for one or more files (supports collages).
