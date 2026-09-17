@@ -61,8 +61,8 @@ THREE_VERIFY_GAP = int(os.getenv("THREE_VERIFY_GAP", "21600"))
 # ── Category System ──────────────────────────────────────────────────────────
 # Channels NOT listed in any category are used for the "All" (default) category.
 # Format:
-#      "🔥 Viral":    [-1003782705533],
-#      "💎 Premium": [-1009876543210, -1001122334455],
+#      "🔥 Viral":    [-1003781265552],
+#      "💎 Premium": [-1009876511826, -10011241115215],
 CATEGORIES: dict = {
     "🔥 Viral":    [-1003782705533, -1003366943724],
     "🖼️ Photos":   [-1003764718856],
@@ -79,37 +79,15 @@ PREMIUM_CAN_DOWNLOAD: bool = os.getenv("PREMIUM_CAN_DOWNLOAD", "True").lower() =
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Reels WebApp / Cloudflare R2 ─────────────────────────────────────────────
-# All of these are optional — if the R2_* credentials are missing, the whole
-# feature quietly disables itself (no WebApp button, no mirroring, no crashes).
-R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "444fb8381f5432bc3ae6a0123b53e4d4")
-R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "01b8738c4439fd941efcd5657e37bc4d")
-R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "4788cb01f879a15daf0d6d8d8e410394a1b0610c1ea98a74b1358bc79d9f576b")
-R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "reels-videos")
-R2_JURISDICTION = os.getenv("R2_JURISDICTION", "us").strip().lower()
-R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL", "https://pub-babd88c1825d4f4c9bb30bcf13f8aa62.r2.dev").rstrip("/")
-R2_ENABLED: bool = bool(R2_ACCOUNT_ID and R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY and R2_BUCKET_NAME)
+from r2_accounts import R2_ACCOUNTS
+R2_ACCOUNTS_BY_ID = {a["id"]: a for a in R2_ACCOUNTS}
+R2_ENABLED: bool = len(R2_ACCOUNTS) > 0
 
-# Public URL this bot's own web server (bot.py's aiohttp app) is reachable at,
 # e.g. your Koyeb service URL "https://your-app.koyeb.app". Used to build the
-# WebApp button and to serve the reels feed API + static WebApp files.
 WEBAPP_URL = os.getenv("WEBAPP_URL", "https://comparable-noni-naha-cbe8eb81.koyeb.app/").rstrip("/")
 
-# Only videos at or under this length (seconds) get mirrored to R2 for the
-# reels feed — longer videos stay DM-only. This is the main lever for keeping
-# R2 storage usage (and therefore cost) predictable.
 REELS_MAX_DURATION = int(os.getenv("REELS_MAX_DURATION", "90"))
-
-# Videos taller than this (pixels) or with a higher bitrate than this get
-# downscaled/re-encoded before mirroring, so playback doesn't stall on a
-# typical phone connection. Videos already under both stay untouched (just
-# faststart-remuxed) — no quality loss, no re-encode time wasted.
 REELS_MAX_HEIGHT = int(os.getenv("REELS_MAX_HEIGHT", "720"))
 REELS_TARGET_BITRATE_KBPS = int(os.getenv("REELS_TARGET_BITRATE_KBPS", "1500"))
-
-# R2's free tier is 10GB storage with zero egress fees. We track our own
-# cumulative upload size (see Database/maindb.py) and alert the admins in DM
-# once usage crosses this percentage, so they can flip the WebApp off before
-# any paid usage is incurred.
-R2_FREE_STORAGE_GB = float(os.getenv("R2_FREE_STORAGE_GB", "10"))
 R2_ALERT_THRESHOLD_PERCENT = float(os.getenv("R2_ALERT_THRESHOLD_PERCENT", "85"))
 # ─────────────────────────────────────────────────────────────────────────────
