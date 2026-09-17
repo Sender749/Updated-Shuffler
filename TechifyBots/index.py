@@ -129,18 +129,37 @@ async def _extract_thumbnail(video_path: str) -> str:
     return None
 
 
+async def _maybe_auto_mirror(client: Client, msg: Message, media_type: str, duration: int, channel_id):
+    """Gate for AUTOMATIC mirroring only (real-time indexing + bulk /index) —
+    respects the per-channel on/off toggle set via /mirrorindex. Manual
+    /mirrorexisting always mirrors regardless of this toggle, since picking a
+    channel there is already a deliberate admin action, not an automatic one."""
+    if not await mdb.get_mirror_channel_state(channel_id):
+        return
+    await mirror_to_r2_if_eligible(client, msg, media_type, duration)
+
+
 async def mirror_to_r2_if_eligible(client: Client, msg: Message, media_type: str, duration: int):
-    """If R2 is configured and this video is short enough for reels, download
-    it once via the bot, faststart-remux it, upload it (+ a poster thumbnail)
-    to R2, then record it as reels-eligible. Any failure here is swallowed —
-    it must never break indexing, and a video that fails to mirror simply
-    stays DM-only (and un-flagged, so it can be retried via /mirrorexisting)."""
+    """If R2 is configured (with at least one account that still has room)
+    and this video is short enough for reels, download it once via the bot,
+    faststart-remux it, upload it (+ a poster thumbnail) to whichever
+    configured R2 account currently has space, then record it as
+    reels-eligible. Any failure here is swallowed — it must never break
+    indexing, and a video that fails to mirror simply stays DM-only (and
+    un-flagged, so it can be retried via /mirrorexisting)."""
     if not R2_ENABLED or media_type != "video":
         return
     if duration <= 0 or duration > REELS_MAX_DURATION:
         return
 
     async with _MIRROR_SEMAPHORE:
+        # Pick the account BEFORE downloading anything — if every configured
+        # account is already full, there's no point spending bandwidth/CPU
+        # on a download+transcode that can't be uploaded anywhere anyway.
+        account = await r2_uploader.pick_account_with_room()
+        if not account:
+            return  # check_r2_usage_alert's background loop handles notifying admins about this
+
         tmp_path = None
         fast_path = None
         thumb_path = None
@@ -155,7 +174,7 @@ async def mirror_to_r2_if_eligible(client: Client, msg: Message, media_type: str
             thumb_path = await _extract_thumbnail(fast_path)
 
             key = f"reels/{msg.chat.id}_{msg.id}.mp4"
-            size = await r2_uploader.upload_file(fast_path, key, content_type="video/mp4")
+            size = await r2_uploader.upload_file(account, fast_path, key, content_type="video/mp4")
             if size < 0:
                 return
 
@@ -163,7 +182,7 @@ async def mirror_to_r2_if_eligible(client: Client, msg: Message, media_type: str
             poster_size = 0
             if thumb_path:
                 poster_key = f"reels/thumbs/{msg.chat.id}_{msg.id}.jpg"
-                thumb_size = await r2_uploader.upload_file(thumb_path, poster_key, content_type="image/jpeg")
+                thumb_size = await r2_uploader.upload_file(account, thumb_path, poster_key, content_type="image/jpeg")
                 if thumb_size < 0:
                     poster_key = None
                 else:
@@ -171,7 +190,8 @@ async def mirror_to_r2_if_eligible(client: Client, msg: Message, media_type: str
 
             await mdb.mark_reels_eligible(
                 video_id=msg.id, source_channel_id=msg.chat.id,
-                r2_key=key, r2_size=size, poster_key=poster_key, poster_size=poster_size,
+                r2_key=key, r2_size=size, r2_account=account["id"],
+                poster_key=poster_key, poster_size=poster_size,
             )
         except Exception as e:
             print(f"[mirror_to_r2_if_eligible] error for msg {getattr(msg, 'id', '?')}: {e}")
@@ -274,7 +294,7 @@ async def save_media(msg: Message, source_channel_id: int = None, client: Client
         )
         is_new = result.upserted_id is not None
         if is_new and media_type == "video" and client is not None:
-            asyncio.create_task(mirror_to_r2_if_eligible(client, msg, media_type, duration))
+            asyncio.create_task(_maybe_auto_mirror(client, msg, media_type, duration, channel_id))
         return is_new  # True = newly inserted
     except Exception as e:
         err_str = str(e)
@@ -602,7 +622,7 @@ async def mirror_existing_command(client: Client, message: Message):
         await message.reply_text("**🚫 You're not authorized to use this command.**")
         return
     if not R2_ENABLED:
-        await message.reply_text("❌ R2 isn't configured (missing R2_* env vars) — nothing to backfill.")
+        await message.reply_text("❌ R2 isn't configured — fill in at least one account in r2_accounts.py first.")
         return
 
     existing = MIRROR_TASKS.get(message.from_user.id)
@@ -646,6 +666,55 @@ async def mirror_existing_command(client: Client, message: Message):
         return
 
     text_out = "📂 **Select a channel to mirror reels from:**\n"
+    if failed_channels:
+        text_out += "\n⚠️ **Couldn't fetch these:**\n" + "\n".join(failed_channels) + "\n"
+    await status_msg.edit_text(text_out, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+@Client.on_message(filters.command("mirrorindex") & filters.private)
+async def mirror_index_toggle_command(client: Client, message: Message):
+    """Admin-only: on/off toggle per channel for AUTOMATIC mirroring to R2.
+    A channel toggled OFF here still indexes normally for DM delivery — it
+    just won't automatically get pushed into the reels feed. Doesn't affect
+    manual /mirrorexisting, which always works regardless of this setting."""
+    if message.from_user.id not in _admin_list():
+        await message.reply_text("**🚫 You're not authorized to use this command.**")
+        return
+    if not R2_ENABLED:
+        await message.reply_text("❌ R2 isn't configured — fill in at least one account in r2_accounts.py first.")
+        return
+
+    status_msg = await message.reply_text("⏳ Fetching channel list...")
+    states = await mdb.get_all_mirror_channel_states(CHANNEL_LIST)
+    buttons = []
+    failed_channels = []
+    for ch in CHANNEL_LIST:
+        try:
+            chat = await client.get_chat(ch)
+            title = chat.title or str(ch)
+            enabled = states.get(ch, True)
+            label = f"{'✅' if enabled else '❌'} {title}"
+            buttons.append([InlineKeyboardButton(label, callback_data=f"mirrorixtoggle_{ch}")])
+        except (ChannelPrivate, ChatAdminRequired):
+            failed_channels.append(f"`{ch}` — bot not admin/member")
+        except Exception as e:
+            failed_channels.append(f"`{ch}` — {type(e).__name__}: {e}")
+
+    buttons.append([InlineKeyboardButton("❌ Close", callback_data="mirrorixclose")])
+
+    if not buttons or (len(buttons) == 1 and failed_channels):
+        await status_msg.edit_text(
+            "❌ **No accessible channels found.**\n\n" + "\n".join(failed_channels)
+        )
+        return
+
+    text_out = (
+        "🎥 **Auto-mirror to Reels, per channel**\n\n"
+        "✅ = new videos from this channel are automatically mirrored to R2\n"
+        "❌ = this channel indexes normally for DMs, but is skipped for reels\n\n"
+        "Tap a channel to toggle it. (Doesn't affect /mirrorexisting — that "
+        "always works on whichever channel you pick, regardless of this.)\n"
+    )
     if failed_channels:
         text_out += "\n⚠️ **Couldn't fetch these:**\n" + "\n".join(failed_channels) + "\n"
     await status_msg.edit_text(text_out, reply_markup=InlineKeyboardMarkup(buttons))
