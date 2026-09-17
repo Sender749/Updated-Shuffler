@@ -1,7 +1,4 @@
 """
-Cloudflare R2 multi-account configuration — lives in the repo, not in Koyeb's
-environment variables, by choice.
-
 HOW TO ADD MORE STORAGE (no other code, anywhere, needs to change):
   1. Copy one whole "ACCOUNT" block below (all its lines).
   2. Paste it right after the last account block.
@@ -9,11 +6,6 @@ HOW TO ADD MORE STORAGE (no other code, anywhere, needs to change):
      number (e.g. every "_2" becomes "_3").
   4. Fill in that account's real values from Cloudflare.
   5. Redeploy.
-
-The bot automatically detects how many numbered accounts are filled in here
-and uses all of them, in order (api1 first, then api2, then api3, ...).
-Leaving a later block's lines commented out (or deleted) is how you tell the
-bot "stop here" — it stops at the first missing number.
 
 Where to find each value in Cloudflare's dashboard:
   - R2_ACCOUNT_ID        → R2 Object Storage → Overview → "Account details"
@@ -33,8 +25,8 @@ Where to find each value in Cloudflare's dashboard:
 
 # ============================== ACCOUNT 1 ==============================
 R2_ACCOUNT_ID_1 = "444fb8381f5432bc3ae6a0123b53e4d4"
-R2_ACCESS_KEY_ID_1 = ""          # paste your current Access Key ID here
-R2_SECRET_ACCESS_KEY_1 = ""      # paste your current Secret Access Key here
+R2_ACCESS_KEY_ID_1 = "01b8738c4439fd941efcd5657e37bc4d"          # paste your current Access Key ID here
+R2_SECRET_ACCESS_KEY_1 = "4788cb01f879a15daf0d6d8d8e410394a1b0610c1ea98a74b1358bc79d9f576b"      # paste your current Secret Access Key here
 R2_BUCKET_NAME_1 = "reels-videos"
 R2_PUBLIC_BASE_URL_1 = "https://pub-babd88c1825d4f4c9bb30bcf13f8aa62.r2.dev"
 R2_JURISDICTION_1 = "us"
