@@ -87,17 +87,25 @@ async def stats_command(client, message):
     STATS += f"**⏱ Bot Uptime:** `{uptime}`\n"
     STATS += f"\n**📡 Channel Breakdown:**\n{channel_block}"
 
-    from vars import R2_ENABLED, R2_FREE_STORAGE_GB
+    from vars import R2_ENABLED, R2_ACCOUNTS
     bot_settings_now = await mdb.get_bot_settings()
     if R2_ENABLED:
-        usage = await mdb.get_r2_usage()
-        used_gb = usage["total_bytes"] / (1024 ** 3)
-        percent = (used_gb / R2_FREE_STORAGE_GB * 100) if R2_FREE_STORAGE_GB else 0
         state = "✅ ON" if bot_settings_now["webapp_enabled"] else "❌ OFF"
-        STATS += (
-            f"\n\n**🎥 Reels WebApp:** {state}\n"
-            f"**☁️ R2 Storage:** `{used_gb:.2f} GB / {R2_FREE_STORAGE_GB:.0f} GB` (`{percent:.1f}%` of free tier)"
-        )
+        STATS += f"\n\n**🎥 Reels WebApp:** {state}\n**☁️ R2 Storage** ({len(R2_ACCOUNTS)} account(s)):"
+        any_room = False
+        for account in R2_ACCOUNTS:
+            usage = await mdb.get_r2_usage(account["id"])
+            used_gb = usage["total_bytes"] / (1024 ** 3)
+            percent = (used_gb / account["free_storage_gb"] * 100) if account["free_storage_gb"] else 0
+            flag = "🔴" if percent >= 100 else ("🟡" if percent >= 85 else "🟢")
+            if percent < 100:
+                any_room = True
+            STATS += (
+                f"\n{flag} `{account['id']}`: `{used_gb:.2f} GB / {account['free_storage_gb']:.0f} GB` "
+                f"(`{percent:.1f}%`)"
+            )
+        if not any_room:
+            STATS += "\n\n🛑 **All accounts full — mirroring has stopped.**"
     else:
         STATS += "\n\n**🎥 Reels WebApp:** Not configured (missing R2_* env vars)"
 
@@ -204,46 +212,44 @@ async def maintenance_mode(client: Client, message: Message):
 
 @Client.on_message(filters.command("r2check") & filters.private)
 async def r2check_command(client: Client, message: Message):
-    """Admin-only: quick read+write test against your R2 bucket, so you can
-    tell whether it's a credentials/permission problem without digging
-    through Koyeb logs."""
+    """Admin-only: quick read+write test against EVERY configured R2 account,
+    so you can tell whether any one of them has a credentials/permission
+    problem without digging through Koyeb logs."""
     if not is_admin(message.from_user.id):
         return
-    from vars import R2_ENABLED, R2_ACCOUNT_ID, R2_BUCKET_NAME, R2_JURISDICTION
+    from vars import R2_ENABLED, R2_ACCOUNTS
     from TechifyBots import r2_uploader
 
     if not R2_ENABLED:
         await message.reply_text(
-            "❌ R2 isn't configured — one or more of R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, "
-            "R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME is missing."
+            "❌ R2 isn't configured — no complete account (ACCOUNT_ID/ACCESS_KEY_ID/"
+            "SECRET_ACCESS_KEY/BUCKET_NAME/PUBLIC_BASE_URL) was found filled in "
+            "r2_accounts.py."
         )
         return
 
-    status = await message.reply_text("⏳ Testing R2 connection (read + write)...")
-    ok, detail = await r2_uploader.test_connection()
-    endpoint_info = f"Jurisdiction: `{R2_JURISDICTION or 'default'}` → `{r2_uploader._R2_ENDPOINT}`"
-    if ok:
-        await status.edit_text(
-            f"✅ **R2 connection OK.**\nAccount: `{R2_ACCOUNT_ID}`\nBucket: `{R2_BUCKET_NAME}`\n{endpoint_info}\n{detail}"
-        )
-        return
+    status = await message.reply_text(f"⏳ Testing {len(R2_ACCOUNTS)} R2 account(s)...")
+    lines = []
+    any_failed = False
+    for account in R2_ACCOUNTS:
+        ok, detail = await r2_uploader.test_connection(account)
+        endpoint = r2_uploader._endpoint_for(account)
+        if ok:
+            lines.append(f"✅ **{account['id']}** — OK\nBucket: `{account['bucket_name']}`\n`{endpoint}`")
+        else:
+            any_failed = True
+            hint = ""
+            if "AccessDenied" in detail or "403" in detail:
+                hint = (
+                    "\n  Likely: wrong jurisdiction, token isn't Read & Write, wrong bucket "
+                    "scope, or bucket name/account ID typo."
+                )
+            elif "NoSuchBucket" in detail:
+                hint = "\n  Likely: bucket name doesn't match any bucket in this account."
+            lines.append(f"❌ **{account['id']}** — FAILED\nBucket: `{account['bucket_name']}`\n`{endpoint}`\n`{detail}`{hint}")
 
-    hint = ""
-    if "AccessDenied" in detail or "403" in detail:
-        hint = (
-            "\n\n**Likely causes:**\n"
-            "• Bucket was created with a data-residency jurisdiction (e.g. \"US\") but "
-            "R2_JURISDICTION isn't set to match — check Settings > Location on the bucket\n"
-            "• API token permission isn't \"Object Read & Write\" (Read-only won't allow uploads)\n"
-            "• The token is scoped to a *different* bucket than R2_BUCKET_NAME\n"
-            "• R2_BUCKET_NAME doesn't exactly match the bucket name in Cloudflare (case-sensitive)\n"
-            "• R2_ACCOUNT_ID is from a different Cloudflare account than the token"
-        )
-    elif "NoSuchBucket" in detail:
-        hint = "\n\n**Likely cause:** R2_BUCKET_NAME doesn't match any bucket in this account — check for typos."
-    await status.edit_text(
-        f"❌ **R2 connection failed.**\nAccount: `{R2_ACCOUNT_ID}`\nBucket: `{R2_BUCKET_NAME}`\n{endpoint_info}\n\n`{detail}`{hint}"
-    )
+    header = "⚠️ **Some accounts failed.**\n\n" if any_failed else "✅ **All accounts OK.**\n\n"
+    await status.edit_text(header + "\n\n".join(lines))
 
 
 @Client.on_message(filters.command("unban") & filters.private)
