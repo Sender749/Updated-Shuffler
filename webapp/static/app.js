@@ -203,6 +203,14 @@
     video.addEventListener("playing", hideSpinner);
     video.addEventListener("waiting", showSpinner);
     video.addEventListener("stalled", showSpinner);
+    // 'waiting'/'stalled' can fire even during genuinely smooth playback (a
+    // looping video seeking back to frame 0, a microsecond network blip) —
+    // if that happens to be the LAST event before the next 'canplay' would
+    // have fired, the spinner gets stuck forever even though the video is
+    // fine. currentTime actually advancing is the one unambiguous signal
+    // that playback is really progressing, so also hide on every
+    // timeupdate — this self-corrects any stuck spinner within ~250ms.
+    video.addEventListener("timeupdate", hideSpinner);
 
     // ── seek bar: sits a bit clear of the very bottom edge (so it isn't
     // where phone system gestures/screen-protector dead zones live), with a
@@ -351,7 +359,15 @@
       const url = new URL("/webapp/api/feed", window.location.origin);
       if (nextCursor) url.searchParams.set("after", nextCursor);
       if (INIT_DATA) url.searchParams.set("init_data", INIT_DATA);
-      const res = await fetch(url);
+      // Browsers have no default fetch timeout — if the server is slow to
+      // wake up (cold start) this could otherwise hang indefinitely with
+      // zero feedback. Bounding it means a genuinely stuck server fails
+      // into the retry popup within 20s instead of leaving the spinner
+      // spinning forever.
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
       const data = await res.json().catch(() => ({}));
 
       if (res.status === 503 || !data.enabled) {
@@ -384,6 +400,13 @@
       if (wasEmpty) updatePreloadWindow(feedEl.firstElementChild);
     } catch (e) {
       console.error("[reels] feed load failed", e);
+      // A network failure on the very first load used to just log quietly
+      // and leave the spinner spinning forever with no way out — exactly
+      // the "stuck" feeling this is meant to fix. Show the retry popup
+      // instead, at least when there's nothing on screen yet.
+      if (!feedEl.children.length) {
+        showUnavailable("Couldn't load reels — check your connection and try again.");
+      }
     } finally {
       loadingMore = false;
     }
