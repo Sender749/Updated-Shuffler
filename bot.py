@@ -3,6 +3,8 @@ import time
 from pytz import timezone
 from datetime import datetime
 import os
+import asyncio
+import aiohttp
 from pyrogram import Client
 from pyrogram.types import BotCommand
 from aiohttp import web
@@ -24,6 +26,34 @@ async def web_server():
     app = web.Application(client_max_size=30_000_000)
     app.add_routes(routes)
     return app
+
+
+async def _keep_alive_loop():
+    """
+    Koyeb's free tier scales the whole instance to zero after a period of no
+    incoming traffic — the next request then has to wait for a full cold
+    boot (container start, Python/Pyrogram/Mongo init) before it can serve
+    even the first byte of the WebApp's loading page. That's a big part of
+    what reads as "stuck" when someone opens the WebApp after it's been
+    idle: nothing can render, not even our own spinner, until the container
+    wakes up.
+
+    This pings the bot's own health-check route every few minutes so there's
+    always been "recent traffic," which keeps Koyeb from scaling it down in
+    the first place. Only runs if WEBAPP_URL is set, since that's the only
+    thing this matters for.
+    """
+    if not WEBAPP_URL:
+        return
+    await asyncio.sleep(30)  # give the server a moment to finish starting up
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get(WEBAPP_URL, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    pass  # a response at all (any status) is what keeps it warm
+            except Exception as e:
+                print(f"[keep_alive] ping failed (harmless, will retry): {e}")
+            await asyncio.sleep(600)  # every 10 minutes — comfortably under any free-tier idle timeout
 
 class Bot(Client):
     def __init__(self):
@@ -50,6 +80,8 @@ class Bot(Client):
         await super().start()
         me = await self.get_me()
         print(f"Bot Started as {me.first_name}")
+
+        asyncio.create_task(_keep_alive_loop())
 
         # Registers Telegram's native "/" command menu — shown to every user
         # when they type "/" in the chat, with a short description each.
