@@ -11,7 +11,7 @@ from .cmds import (
     _build_category_markup, _categories_list_text, _make_file_buttons,
     _get_prev_from_cache, _get_history_cache,
 )
-from .index import INDEX_TASKS, start_indexing, MIRROR_TASKS
+from .index import INDEX_TASKS, start_indexing, MIRROR_TASKS, CHANNEL_LIST
 from .link_generator import handle_lg_callback
 from .quicklink import handle_ql_callback
 from .admin import handle_settings_toggle
@@ -361,6 +361,44 @@ async def callback_query_handler(client, query: CallbackQuery):
             else:
                 task["cancel"] = True
                 await query.answer("Stopping... this takes effect within a few seconds.")
+
+        # ==================== /mirrorindex (per-channel auto-mirror toggle) ====================
+
+        elif data.startswith("mirrorixtoggle_"):
+            if not _is_admin(uid):
+                await query.answer("You are not my admin ❌", show_alert=True)
+                return
+            channel_id = int(data.split("_", 1)[1])
+            current = await mdb.get_mirror_channel_state(channel_id)
+            new_state = not current
+            await mdb.set_mirror_channel_state(channel_id, new_state)
+            await query.answer(f"Auto-mirror for this channel is now {'ON ✅' if new_state else 'OFF ❌'}")
+
+            # Rebuild the button list in place so the toggle reflects instantly.
+            states = await mdb.get_all_mirror_channel_states(CHANNEL_LIST)
+            buttons = []
+            for ch in CHANNEL_LIST:
+                try:
+                    chat = await client.get_chat(ch)
+                    title = chat.title or str(ch)
+                    enabled = states.get(ch, True)
+                    buttons.append([InlineKeyboardButton(
+                        f"{'✅' if enabled else '❌'} {title}", callback_data=f"mirrorixtoggle_{ch}"
+                    )])
+                except Exception:
+                    buttons.append([InlineKeyboardButton(f"⚠️ {ch}", callback_data=f"mirrorixtoggle_{ch}")])
+            buttons.append([InlineKeyboardButton("❌ Close", callback_data="mirrorixclose")])
+            try:
+                await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(buttons))
+            except Exception:
+                pass
+
+        elif data == "mirrorixclose":
+            await query.answer()
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
 
     except Exception as e:
         print(f"[callback_query_handler] error: {e}")
