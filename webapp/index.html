@@ -4,8 +4,26 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
 <title>Reels</title>
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #000; overflow: hidden; }
+  .overlay {
+    position: fixed; inset: 0; background: #000;
+    display: flex; align-items: center; justify-content: center; z-index: 50;
+  }
+  .overlay.hidden { display: none; }
+  .spinner {
+    width: 36px; height: 36px;
+    border: 3px solid rgba(255,255,255,0.2); border-top-color: #fff;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
 <link rel="stylesheet" href="/webapp/static/style.css" />
+<!-- defer: don't block HTML parsing/first paint on a third-party network
+     round trip — app.js (also effectively deferred by being at the end of
+     body) still runs after this, in order, once both are loaded. -->
+<script src="https://telegram.org/js/telegram-web-app.js" defer></script>
 </head>
 <body>
   <div id="feed" class="feed"></div>
@@ -38,6 +56,6 @@
     </div>
   </div>
 
-  <script src="/webapp/static/app.js"></script>
+  <script src="/webapp/static/app.js" defer></script>
 </body>
 </html>
