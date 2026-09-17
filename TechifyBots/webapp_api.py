@@ -1,10 +1,3 @@
-"""
-aiohttp routes for the Reels WebApp: status, paginated feed, like-toggling,
-and the static WebApp files themselves. All registered onto bot.py's existing
-aiohttp RouteTableDef, so this reuses the same web server (and same $PORT)
-that's already running for health checks — no separate service needed.
-"""
-
 import hashlib
 import hmac
 import json
@@ -13,7 +6,7 @@ import urllib.parse
 
 from aiohttp import web
 from Database.maindb import mdb
-from vars import R2_PUBLIC_BASE_URL, R2_ENABLED, BOT_TOKEN
+from vars import R2_ACCOUNTS_BY_ID, R2_ACCOUNTS, R2_ENABLED, BOT_TOKEN
 
 WEBAPP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "webapp")
 WEBAPP_ASSETS_DIR = os.path.join(WEBAPP_DIR, "static")
@@ -119,18 +112,30 @@ async def _feed_handler(request: web.Request) -> web.Response:
     doc_ids = [str(doc["_id"]) for doc in docs if doc.get("r2_key")]
     liked_ids = await mdb.get_liked_video_ids(user_id, doc_ids) if user_id else set()
 
-    items = [
-        {
+    def _account_for(doc):
+        acct = R2_ACCOUNTS_BY_ID.get(doc.get("r2_account"))
+        if acct:
+            return acct
+        # Legacy doc mirrored before multi-account support existed — it was
+        # always account 1 back then, so that's the correct fallback.
+        return R2_ACCOUNTS[0] if R2_ACCOUNTS else None
+
+    items = []
+    for doc in docs:
+        if not doc.get("r2_key"):
+            continue
+        account = _account_for(doc)
+        if not account:
+            continue
+        base = account["public_base_url"]
+        items.append({
             "id": str(doc["_id"]),
-            "url": f"{R2_PUBLIC_BASE_URL}/{doc['r2_key']}",
-            "poster": f"{R2_PUBLIC_BASE_URL}/{doc['poster_key']}" if doc.get("poster_key") else None,
+            "url": f"{base}/{doc['r2_key']}",
+            "poster": f"{base}/{doc['poster_key']}" if doc.get("poster_key") else None,
             "duration": doc.get("duration", 0),
             "likes": doc.get("likes_count", 0),
             "liked": str(doc["_id"]) in liked_ids,
-        }
-        for doc in docs
-        if doc.get("r2_key")
-    ]
+        })
     next_cursor = items[-1]["id"] if items else None
     return web.json_response({"enabled": True, "items": items, "next": next_cursor})
 
