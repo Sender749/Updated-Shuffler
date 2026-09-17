@@ -29,6 +29,7 @@ class Database:
         self.async_r2_usage = self.async_db["r2_usage"]
         self.async_reel_likes = self.async_db["reel_likes"]
         self.async_reel_views = self.async_db["reel_views"]
+        self.async_mirror_channels = self.async_db["mirror_channels"]
         asyncio.create_task(self.check_and_reset_daily_counts())
         asyncio.create_task(self.check_premium_expire())
         asyncio.create_task(self.check_r2_usage_alert())
@@ -387,65 +388,125 @@ class Database:
             )
         ]
 
-    # ── REELS WEBAPP / R2 USAGE ──────────────────────────────────────────────
+    # ── REELS WEBAPP / R2 USAGE (per account) ────────────────────────────────
     # We never call Cloudflare's own usage API (no extra credentials needed) —
-    # since we're the only writer to the bucket, we just keep a running total
-    # of bytes we've uploaded in a single-doc collection and alert off that.
+    # since we're the only writer to each bucket, we just keep a running total
+    # of bytes uploaded per account (one doc per account_id) and alert off that.
 
-    async def get_r2_usage(self) -> dict:
-        doc = await self.async_r2_usage.find_one({"_id": "usage"})
+    async def get_r2_usage(self, account_id: str) -> dict:
+        doc = await self.async_r2_usage.find_one({"_id": account_id})
         return {
             "total_bytes": (doc or {}).get("total_bytes", 0),
             "alert_sent": (doc or {}).get("alert_sent", False),
         }
 
-    async def add_r2_usage_bytes(self, delta: int):
-        """Adjust the tracked usage total (positive on upload, negative on delete)."""
+    async def add_r2_usage_bytes(self, account_id: str, delta: int):
+        """Adjust one account's tracked usage total (positive on upload,
+        negative on delete)."""
         await self.async_r2_usage.update_one(
-            {"_id": "usage"}, {"$inc": {"total_bytes": delta}}, upsert=True
+            {"_id": account_id}, {"$inc": {"total_bytes": delta}}, upsert=True
         )
 
-    async def set_r2_alert_sent(self, sent: bool):
+    async def set_r2_alert_sent(self, account_id: str, sent: bool):
         await self.async_r2_usage.update_one(
-            {"_id": "usage"}, {"$set": {"alert_sent": sent}}, upsert=True
+            {"_id": account_id}, {"$set": {"alert_sent": sent}}, upsert=True
         )
 
     async def check_r2_usage_alert(self):
-        """Background loop: DM all admins once tracked R2 usage crosses the
-        configured free-tier alert threshold, so they can flip the WebApp off
-        via /settings before anything would go beyond the free plan. Resets
-        itself (so it can fire again) once usage drops back under threshold —
-        e.g. after old reels are deleted."""
-        from vars import R2_ENABLED, R2_FREE_STORAGE_GB, R2_ALERT_THRESHOLD_PERCENT, ADMIN_IDS
+        """Background loop: DMs admins in two situations —
+        1. Any single configured account crosses its own free-tier alert
+           threshold (so they can add another account, delete old reels, or
+           flip the WebApp off before that one account incurs cost).
+        2. EVERY configured account is full at once — at that point mirroring
+           has actually stopped (see r2_uploader.pick_account_with_room), so
+           this is a more urgent, separate alert.
+        Each per-account alert resets itself once that account drops back
+        under threshold; the all-full alert resets once any account regains
+        room."""
+        from vars import R2_ENABLED, R2_ACCOUNTS, R2_ALERT_THRESHOLD_PERCENT, ADMIN_IDS
         if not R2_ENABLED:
             return
-        limit_bytes = R2_FREE_STORAGE_GB * (1024 ** 3)
         for _ in count():
             try:
-                usage = await self.get_r2_usage()
-                percent = (usage["total_bytes"] / limit_bytes) * 100 if limit_bytes else 0
-                if percent >= R2_ALERT_THRESHOLD_PERCENT and not usage["alert_sent"]:
-                    used_gb = usage["total_bytes"] / (1024 ** 3)
+                any_room = False
+                for account in R2_ACCOUNTS:
+                    usage = await self.get_r2_usage(account["id"])
+                    limit_bytes = account["free_storage_gb"] * (1024 ** 3)
+                    percent = (usage["total_bytes"] / limit_bytes) * 100 if limit_bytes else 0
+                    if percent < 100:
+                        any_room = True
+                    if percent >= R2_ALERT_THRESHOLD_PERCENT and not usage["alert_sent"]:
+                        used_gb = usage["total_bytes"] / (1024 ** 3)
+                        msg = (
+                            f"⚠️ **Reels WebApp — R2 Storage Alert ({account['id']})**\n\n"
+                            f"Usage: **{used_gb:.2f} GB** / {account['free_storage_gb']:.0f} GB free tier "
+                            f"(**{percent:.1f}%**)\n\n"
+                            f"This account is approaching Cloudflare R2's free storage limit. "
+                            f"The bot will automatically move on to the next configured account "
+                            f"once this one fills up, but it's worth knowing which one is closest.\n\n"
+                            f"Add another account block in r2_accounts.py (ACCOUNT {int(account['id'][3:]) + 1}), "
+                            f"or delete some older "
+                            f"reels mirrored under {account['id']} to free up space."
+                        )
+                        for admin_id in ADMIN_IDS:
+                            try:
+                                await bot.send_message(admin_id, msg)
+                            except Exception as e:
+                                print(f"[check_r2_usage_alert] failed to notify admin {admin_id}: {e}")
+                        await self.set_r2_alert_sent(account["id"], True)
+                    elif percent < R2_ALERT_THRESHOLD_PERCENT and usage["alert_sent"]:
+                        await self.set_r2_alert_sent(account["id"], False)
+
+                all_full_doc = await self.async_r2_usage.find_one({"_id": "_all_full_alert"})
+                all_full_alert_sent = (all_full_doc or {}).get("sent", False)
+                if not any_room and not all_full_alert_sent:
                     msg = (
-                        "⚠️ **Reels WebApp — R2 Storage Alert**\n\n"
-                        f"Usage: **{used_gb:.2f} GB** / {R2_FREE_STORAGE_GB:.0f} GB free tier "
-                        f"(**{percent:.1f}%**)\n\n"
-                        "You're approaching Cloudflare R2's free storage limit. "
-                        "Going over means paid usage starts.\n\n"
-                        "Use /settings → 🎥 Reels WebApp to turn it OFF, or delete some "
-                        "older reels to free up space."
+                        "🛑 **Reels WebApp — All R2 accounts are full**\n\n"
+                        f"All {len(R2_ACCOUNTS)} configured R2 account(s) have hit their free storage "
+                        "limit. **Mirroring to R2 has stopped** — new videos will keep indexing "
+                        "normally for DMs, but won't be added to the reels feed until there's room "
+                        "again.\n\n"
+                        "Add another account block in r2_accounts.py, or delete some "
+                        "older reels to free up space on an existing account."
                     )
                     for admin_id in ADMIN_IDS:
                         try:
                             await bot.send_message(admin_id, msg)
                         except Exception as e:
                             print(f"[check_r2_usage_alert] failed to notify admin {admin_id}: {e}")
-                    await self.set_r2_alert_sent(True)
-                elif percent < R2_ALERT_THRESHOLD_PERCENT and usage["alert_sent"]:
-                    await self.set_r2_alert_sent(False)
+                    await self.async_r2_usage.update_one(
+                        {"_id": "_all_full_alert"}, {"$set": {"sent": True}}, upsert=True
+                    )
+                elif any_room and all_full_alert_sent:
+                    await self.async_r2_usage.update_one(
+                        {"_id": "_all_full_alert"}, {"$set": {"sent": False}}, upsert=True
+                    )
             except Exception as e:
                 print(f"[check_r2_usage_alert] error: {e}")
             await asyncio.sleep(1800)  # check every 30 minutes
+
+    # ── MIRROR CHANNEL TOGGLES ────────────────────────────────────────────────
+    # Per-channel on/off switch for AUTOMATIC mirroring (real-time indexing +
+    # the bulk /index backfill). Manual /mirrorexisting always works regardless
+    # of this toggle, since picking a channel there is already a deliberate,
+    # explicit admin action. Any channel not yet explicitly toggled defaults
+    # to ON, matching the original always-mirror-everything behavior.
+
+    async def get_mirror_channel_state(self, channel_id) -> bool:
+        doc = await self.async_mirror_channels.find_one({"_id": channel_id})
+        return True if doc is None else doc.get("enabled", True)
+
+    async def set_mirror_channel_state(self, channel_id, enabled: bool):
+        await self.async_mirror_channels.update_one(
+            {"_id": channel_id}, {"$set": {"enabled": enabled}}, upsert=True
+        )
+
+    async def get_all_mirror_channel_states(self, channel_ids: list) -> dict:
+        cursor = self.async_mirror_channels.find({"_id": {"$in": channel_ids}})
+        states = {doc["_id"]: doc.get("enabled", True) async for doc in cursor}
+        for ch in channel_ids:
+            states.setdefault(ch, True)
+        return states
 
     # ── REELS FEED ────────────────────────────────────────────────────────────
 
@@ -517,15 +578,15 @@ class Database:
         return docs
 
     async def mark_reels_eligible(self, video_id: int, source_channel_id, r2_key: str,
-                                   r2_size: int, poster_key: str = None, poster_size: int = 0):
-        update = {"reels_eligible": True, "r2_key": r2_key, "r2_size": r2_size}
+                                   r2_size: int, r2_account: str, poster_key: str = None, poster_size: int = 0):
+        update = {"reels_eligible": True, "r2_key": r2_key, "r2_size": r2_size, "r2_account": r2_account}
         if poster_key:
             update["poster_key"] = poster_key
         await self.async_video_collection.update_one(
             {"video_id": video_id, "source_channel_id": source_channel_id},
             {"$set": update},
         )
-        await self.add_r2_usage_bytes(r2_size + poster_size)
+        await self.add_r2_usage_bytes(r2_account, r2_size + poster_size)
 
     # ── REELS LIKES ───────────────────────────────────────────────────────────
     # One doc per (video, user) in reel_likes, keyed so a user can only like a
