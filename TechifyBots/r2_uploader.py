@@ -1,12 +1,3 @@
-"""
-Cloudflare R2 upload helper for the Reels WebApp feature — multi-account
-pool version. R2 is S3-API-compatible, so we use aioboto3 (async boto3) with
-R2's endpoint, one client per configured account (see vars.R2_ACCOUNTS).
-
-This module is intentionally defensive — indexing must keep working even if
-R2 is unreachable/misconfigured, so public functions never raise.
-"""
-
 import os
 
 import aioboto3
