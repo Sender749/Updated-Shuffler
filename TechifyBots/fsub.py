@@ -153,3 +153,23 @@ async def get_fsub(bot: Client, message, user_id: int = None, start_param: str =
 
 def invalidate_fsub_cache(user_id: int):
     _FSUB_CACHE.pop(user_id, None)
+
+
+async def check_fsub_for_webapp(bot: Client, user_id: int) -> list:
+    """
+    Same membership check as get_fsub above, but for the Reels WebApp: no
+    Telegram message gets sent, and no `message` object is available to pull
+    a chat_id/mention from — just returns the list of channels the user
+    still needs to join, as [{"title": ..., "invite_link": ...}, ...].
+    An empty list means they're fully subscribed (or AUTH_CHANNELS is empty).
+    """
+    if not AUTH_CHANNELS:
+        return []
+    results = await asyncio.gather(
+        *[_check_single_channel(bot, user_id, ch) for ch in AUTH_CHANNELS]
+    )
+    not_joined = [
+        {"title": title, "invite_link": link}
+        for joined, title, link in results if not joined and title and link
+    ]
+    return not_joined
