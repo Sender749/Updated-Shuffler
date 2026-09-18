@@ -72,29 +72,21 @@ async def _feed_handler(request: web.Request) -> web.Response:
 
     after_id = request.query.get("after")
     try:
-        limit = min(max(int(request.query.get("limit", 10)), 1), 25)
+        # Default batch size deliberately small (not 10): the free-play limit
+        # is spent per item SERVED, so a large default batch could hand out
+        # someone's entire free quota in one request, immediately showing
+        # "0 free reels left" before they'd watched anything. A small batch
+        # means the count actually steps down as they scroll — a fetch is a
+        # cheap JSON request either way, so this doesn't cost real speed
+        # (the video bytes themselves are still eagerly preloaded per-item
+        # regardless of batch size — see updatePreloadWindow in app.js).
+        limit = min(max(int(request.query.get("limit", 3)), 1), 25)
     except ValueError:
         limit = 10
 
     user = _verify_init_data(request.query.get("init_data", ""))
     user_id = user.get("id") if user else None
 
-    if settings.get("is_fsub", False):
-        from TechifyBots.fsub import check_fsub_for_webapp
-        from bot import bot
-        if not user_id:
-            # Can't check membership without a verified identity — play it
-            # safe and gate, same reasoning as the verification check below.
-            return web.json_response({
-                "enabled": True, "fsub_required": True, "channels": [], "items": [], "next": None,
-            })
-        not_joined = await check_fsub_for_webapp(bot, user_id)
-        if not_joined:
-            return web.json_response({
-                "enabled": True, "fsub_required": True, "channels": not_joined, "items": [], "next": None,
-            })
-
-    remaining_free = None
     if settings.get("is_verify", True):
         # Same verification system as the bot's DM flow (same "verified"
         # status/expiry) — just with its own separate free-play counter.
@@ -111,12 +103,9 @@ async def _feed_handler(request: web.Request) -> web.Response:
             usage = await mdb.check_and_increment_reels_usage(user_id, limit)
             if usage["serve"] <= 0:
                 return web.json_response(
-                    {"enabled": True, "verification_required": True, "items": [], "next": None,
-                     "remaining_free": 0}
+                    {"enabled": True, "verification_required": True, "items": [], "next": None}
                 )
             limit = usage["serve"]  # cap this batch to whatever's left of today's free quota
-            if usage["limit"] is not None:  # None means unlimited (prime) — no count to show
-                remaining_free = max(0, usage["limit"] - usage["count"])
 
     if user_id:
         # Verified Telegram user — server tracks what they've already been
@@ -156,10 +145,7 @@ async def _feed_handler(request: web.Request) -> web.Response:
             "liked": str(doc["_id"]) in liked_ids,
         })
     next_cursor = items[-1]["id"] if items else None
-    response = {"enabled": True, "items": items, "next": next_cursor}
-    if remaining_free is not None:
-        response["remaining_free"] = remaining_free
-    return web.json_response(response)
+    return web.json_response({"enabled": True, "items": items, "next": next_cursor})
 
 
 async def _like_handler(request: web.Request) -> web.Response:
