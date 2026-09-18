@@ -279,5 +279,37 @@ class dypixx:
             print("Error in update_verify_id_info: ", e)
             return False
 
-udb = dypixx()
+    async def complete_verification(self, uid: int, vid: str) -> dict | None:
+        """
+        Shared verification-completion logic — used by both the bot-DM flow
+        (cmds.py's handle_verify, via the classic ?start= deep link) and the
+        WebApp's direct-launch flow (webapp_api.py, via a ?startapp= link
+        that opens the Mini App itself with real initData). Validates the
+        vid belongs to this user and hasn't already been used, marks it
+        verified, and bumps the right tier (first/second/third-time
+        verification gap — same rules either way). Returns the tier info on
+        success, or None if the vid is invalid/expired/already used.
+        """
+        from datetime import datetime
+        from vars import TWO_VERIFY_GAP
+        verify_info = await self.get_verify_id_info(uid, vid)
+        if not verify_info or verify_info.get("verified"):
+            return None
 
+        is_second = await self.use_second_shortener(uid, TWO_VERIFY_GAP)
+        is_third = await self.user_verified(uid)
+
+        if is_third:
+            key, tier = "third_time_verified", 3
+        elif is_second:
+            key, tier = "second_time_verified", 2
+        else:
+            key, tier = "last_verified", 1
+
+        now = datetime.now(tz=IST)
+        await self.update_verify_user(uid, {key: now})
+        await self.update_verify_id_info(uid, vid, {"verified": True})
+
+        return {"tier": tier, "verified_at": now, "gap_seconds": TWO_VERIFY_GAP}
+
+udb = dypixx()
