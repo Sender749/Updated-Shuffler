@@ -335,6 +335,41 @@ html, body {
   transform: translateX(-50%) translateY(-12px);
 }
 
+/* Remaining-free-reels badge — fixed to the viewport (not any one reel) so
+   it stays put and stays accurate while scrolling, positioned just below
+   where the "tap for sound" mute hint sits for whichever reel is active. */
+.free-count-badge {
+  position: fixed;
+  top: 56px;
+  right: 16px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 20px;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.free-count-badge.hidden {
+  display: none;
+}
+
+/* Force-sub popup's channel list — one full-width button per channel,
+   opened externally (Telegram handles joining), stacked above the
+   "I've Joined" recheck button. */
+#fsub-channel-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+#fsub-channel-buttons .popup-btn {
+  margin-top: 0;
+}
+
 .empty-state {
   color: rgba(255,255,255,0.6);
   font-size: 14px;
