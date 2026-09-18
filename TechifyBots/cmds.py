@@ -276,34 +276,18 @@ async def handle_verify(client, message, data):
     vid = parts[2]
     origin = parts[3]  # "video" (DM flow) or "reels" (WebApp flow) — only changes the buttons shown below
 
-    verify_info = await udb.get_verify_id_info(uid, vid)
-    if not verify_info or verify_info.get("verified"):
+    result = await udb.complete_verification(uid, vid)
+    if not result:
         await message.reply("<b>Link expired</b>")
         return
-
-    ist = pytz.timezone('Asia/Kolkata')
-    is_second, is_third = await asyncio.gather(
-        udb.use_second_shortener(uid, TWO_VERIFY_GAP),
-        udb.user_verified(uid),
-    )
-
-    if is_third:
-        key, num, msg = "third_time_verified", 3, text.THIRDT_VERIFY_COMPLETE_TEXT
-    elif is_second:
-        key, num, msg = "second_time_verified", 2, text.SECOND_VERIFY_COMPLETE_TEXT
-    else:
-        key, num, msg = "last_verified", 1, text.VERIFY_COMPLETE_TEXT
-
-    now = datetime.now(tz=ist)
-    await asyncio.gather(
-        udb.update_verify_user(uid, {key: now}),
-        udb.update_verify_id_info(uid, vid, {"verified": True})
-    )
     clear_user_cache(uid)
+
+    tier = result["tier"]
+    msg = {1: text.VERIFY_COMPLETE_TEXT, 2: text.SECOND_VERIFY_COMPLETE_TEXT, 3: text.THIRDT_VERIFY_COMPLETE_TEXT}[tier]
 
     asyncio.create_task(client.send_message(
         LOG_VR_CHANNEL,
-        text.VERIFIED_LOG_TEXT.format(message.from_user.mention, uid, now.strftime('%d %B %Y'), num)
+        text.VERIFIED_LOG_TEXT.format(message.from_user.mention, uid, result["verified_at"].strftime('%d %B %Y'), tier)
     ))
 
     buttons = [[InlineKeyboardButton("🎬 Get Video", callback_data="getvideo")]]
