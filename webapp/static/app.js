@@ -24,11 +24,16 @@
   const verifyBtn = document.getElementById("verify-btn");
   const verifyHowtoBtn = document.getElementById("verify-howto-btn");
   const verifiedToastEl = document.getElementById("verified-toast");
+  const fsubOverlayEl = document.getElementById("fsub-overlay");
+  const fsubChannelButtonsEl = document.getElementById("fsub-channel-buttons");
+  const fsubRecheckBtn = document.getElementById("fsub-recheck-btn");
+  const freeCountBadgeEl = document.getElementById("free-count-badge");
 
   let nextCursor = null;
   let loadingMore = false;
   let reachedEnd = false;
   let verificationGated = false; // true once the feed says we need to verify — stops further loadMore() calls
+  let fsubGated = false; // true once the feed says required channels aren't joined yet
 
   // Single global source of truth for mute, applied to whichever video is
   // ACTUALLY PLAYING right now (see the IntersectionObserver below) — not
@@ -79,6 +84,41 @@
   function showVerifiedToast() {
     verifiedToastEl.classList.remove("hidden");
     setTimeout(() => verifiedToastEl.classList.add("hidden"), 2500);
+  }
+
+  function showFsubOverlay(channels) {
+    fsubGated = true;
+    loadingEl.classList.add("hidden");
+    fsubChannelButtonsEl.innerHTML = "";
+    (channels || []).forEach((ch) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "popup-btn popup-btn-secondary";
+      btn.textContent = `📢 ${ch.title}`;
+      btn.addEventListener("click", () => openExternal(ch.invite_link));
+      fsubChannelButtonsEl.appendChild(btn);
+    });
+    fsubOverlayEl.classList.remove("hidden");
+  }
+
+  function hideFsubOverlay() {
+    fsubOverlayEl.classList.add("hidden");
+  }
+
+  fsubRecheckBtn.addEventListener("click", async () => {
+    hideFsubOverlay();
+    fsubGated = false;
+    loadingEl.classList.remove("hidden");
+    await loadMore();
+  });
+
+  function updateFreeCountBadge(remaining) {
+    if (remaining === null || remaining === undefined) {
+      freeCountBadgeEl.classList.add("hidden");
+      return;
+    }
+    freeCountBadgeEl.textContent = remaining === 1 ? "1 free reel left" : `${remaining} free reels left`;
+    freeCountBadgeEl.classList.remove("hidden");
   }
 
   verifyBtn.addEventListener("click", async () => {
@@ -367,7 +407,7 @@
   }
 
   async function loadMore() {
-    if (loadingMore || reachedEnd || verificationGated) return;
+    if (loadingMore || reachedEnd || verificationGated || fsubGated) return;
     loadingMore = true;
     try {
       const url = new URL("/webapp/api/feed", window.location.origin);
@@ -389,10 +429,16 @@
         reachedEnd = true;
         return;
       }
+      if (data.fsub_required) {
+        showFsubOverlay(data.channels);
+        return;
+      }
       if (data.verification_required) {
+        updateFreeCountBadge(data.remaining_free);
         await showVerifyOverlay();
         return;
       }
+      updateFreeCountBadge(data.remaining_free);
 
       if (!data.items || data.items.length === 0) {
         loadingEl.classList.add("hidden");
@@ -429,6 +475,10 @@
   feedEl.addEventListener("scroll", () => {
     const nearBottom = feedEl.scrollTop + feedEl.clientHeight >= feedEl.scrollHeight - window.innerHeight * 1.5;
     if (!nearBottom) return;
+    if (fsubGated) {
+      fsubOverlayEl.classList.remove("hidden");
+      return;
+    }
     if (verificationGated) {
       // Cancelling the popup only closes it — it does NOT lift the gate.
       // Trying to reach a new (not-yet-loaded) video re-shows the same
