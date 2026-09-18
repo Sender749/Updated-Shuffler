@@ -23,7 +23,7 @@
   const verifyOverlayEl = document.getElementById("verify-overlay");
   const verifyBtn = document.getElementById("verify-btn");
   const verifyHowtoBtn = document.getElementById("verify-howto-btn");
-  const verifyCancelBtn = document.getElementById("verify-cancel-btn");
+  const verifiedToastEl = document.getElementById("verified-toast");
 
   let nextCursor = null;
   let loadingMore = false;
@@ -76,6 +76,11 @@
     verifyOverlayEl.classList.add("hidden");
   }
 
+  function showVerifiedToast() {
+    verifiedToastEl.classList.remove("hidden");
+    setTimeout(() => verifiedToastEl.classList.add("hidden"), 2500);
+  }
+
   verifyBtn.addEventListener("click", async () => {
     if (!verifyInfoCache) verifyInfoCache = await fetchVerifyInfo();
     if (verifyInfoCache && verifyInfoCache.verify_url) openExternal(verifyInfoCache.verify_url);
@@ -83,12 +88,6 @@
   verifyHowtoBtn.addEventListener("click", async () => {
     if (!verifyInfoCache) verifyInfoCache = await fetchVerifyInfo();
     if (verifyInfoCache && verifyInfoCache.tutorial_url) openExternal(verifyInfoCache.tutorial_url);
-  });
-  verifyCancelBtn.addEventListener("click", () => {
-    // Closes the popup only. Already-loaded reels stay watchable; scrolling
-    // to ask for a NEW one will re-trigger this same popup, same as hitting
-    // the limit fresh — matches "user needs to try again to see it again."
-    hideVerifyOverlay();
   });
 
   function updateMuteIcon(wrap, video) {
@@ -109,19 +108,32 @@
     });
   }
 
-  // Brief center play/pause icon flash on tap, like most video apps give as
-  // feedback so a tap doesn't feel like it did nothing.
-  function flashPauseIcon(wrap, isPaused) {
+  // Pause is shown PERSISTENTLY (stays until resumed) so it's always clear
+  // the user stopped it on purpose. Resume gets the old brief flash instead,
+  // since "now playing" is the normal state and doesn't need to stick around.
+  function showPauseIndicator(wrap) {
+    if (wrap.querySelector(".pause-indicator")) return;
+    const indicator = document.createElement("div");
+    indicator.className = "pause-indicator";
+    indicator.textContent = "❚❚";
+    wrap.appendChild(indicator);
+  }
+
+  function hidePauseIndicator(wrap) {
+    const indicator = wrap.querySelector(".pause-indicator");
+    if (indicator) indicator.remove();
+  }
+
+  function flashResumeIcon(wrap) {
     let flash = wrap.querySelector(".tap-flash");
     if (!flash) {
       flash = document.createElement("div");
       flash.className = "tap-flash";
       wrap.appendChild(flash);
     }
-    flash.textContent = isPaused ? "❚❚" : "▶";
+    flash.textContent = "▶";
     flash.classList.remove("show");
-    // Force reflow so the animation restarts on rapid repeat taps.
-    void flash.offsetWidth;
+    void flash.offsetWidth; // force reflow so the animation restarts on rapid repeat taps
     flash.classList.add("show");
   }
 
@@ -157,6 +169,7 @@
         video.muted = globallyMuted;
         updateMuteIcon(entry.target, video);
         video.play().catch(() => {});
+        hidePauseIndicator(entry.target);
         updatePreloadWindow(entry.target);
       } else {
         video.pause();
@@ -327,10 +340,11 @@
     wrap.addEventListener("click", () => {
       if (video.paused) {
         video.play().catch(() => {});
-        flashPauseIcon(wrap, false);
+        hidePauseIndicator(wrap);
+        flashResumeIcon(wrap);
       } else {
         video.pause();
-        flashPauseIcon(wrap, true);
+        showPauseIndicator(wrap);
       }
     });
 
@@ -435,8 +449,45 @@
     await loadMore();
   });
 
-  // Single request on load — the feed endpoint itself reports whether the
-  // WebApp is enabled (and whether verification is needed), so there's no
-  // separate round trip before anything can appear on screen.
-  loadMore();
+  // If this WebApp was opened via the ?startapp=verify_<vid> direct link
+  // (see webapp_api.py's _verify_info_handler), Telegram hands us that
+  // payload here — a genuine Mini App launch, so real initData/identity is
+  // available, unlike a plain external link. This is what lets verification
+  // complete right inside the app instead of sending the user to the bot's
+  // DM chat.
+  async function completeVerificationIfLaunchedForIt() {
+    const startParam = tg && tg.initDataUnsafe ? tg.initDataUnsafe.start_param : null;
+    if (!startParam || !startParam.startsWith("verify_")) return;
+    const vid = startParam.slice("verify_".length);
+    try {
+      const res = await fetch("/webapp/api/verify-complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vid, init_data: INIT_DATA }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.verified) {
+          hideVerifyOverlay();
+          verificationGated = false;
+          showVerifiedToast();
+        }
+      }
+    } catch (e) {
+      // Silent failure here is intentional — if the vid is already used,
+      // expired, or the request just fails, the user simply falls through
+      // to the normal feed load below as if they'd opened the app plainly.
+      // If they're genuinely not verified, the usual gate will catch it.
+    }
+  }
+
+  async function init() {
+    await completeVerificationIfLaunchedForIt();
+    // Single request from here — the feed endpoint itself reports whether
+    // the WebApp is enabled (and whether verification is needed), so
+    // there's no separate round trip before anything can appear on screen.
+    await loadMore();
+  }
+
+  init();
 })();
