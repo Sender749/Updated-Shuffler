@@ -169,7 +169,16 @@ async def _verify_info_handler(request: web.Request) -> web.Response:
     """Called by the WebApp once it hits the verification gate — generates a
     fresh shortlink (same shortener/verify-id system as the bot's DM flow)
     and hands back the tutorial link too, for the Verify / How to verify
-    buttons in the popup."""
+    buttons in the popup.
+
+    Uses a ?startapp= direct link rather than the classic ?start= one — that
+    launches the Mini App itself (full Telegram.WebApp context, real
+    initData) instead of landing the user in the bot's DM chat. This is what
+    lets the WebApp complete verification and show a toast right there
+    instead of sending them back to the bot. Requires the bot to have a Main
+    Mini App configured via @BotFather (the "Create Direct Link" step) — if
+    that hasn't been set up, this link just won't open the app directly.
+    """
     user = _verify_init_data(request.query.get("init_data", ""))
     if not user:
         return web.json_response({"error": "auth_required"}, status=401)
@@ -185,12 +194,35 @@ async def _verify_info_handler(request: web.Request) -> web.Response:
 
     from bot import bot  # safe here — only ever called at request time, well after bot.py finishes loading
     bot_info = await bot.get_me()
-    deep_link = f"https://telegram.me/{bot_info.username}?start=verify_{user_id}_{vid}_reels"
+    deep_link = f"https://t.me/{bot_info.username}?startapp=verify_{vid}"
 
     await udb.create_verify_id(user_id, vid)
     short = await get_shortlink(deep_link, False, False)  # reels always uses the first-tier shortener
 
     return web.json_response({"verify_url": short, "tutorial_url": TUTORIAL})
+
+
+async def _verify_complete_handler(request: web.Request) -> web.Response:
+    """Called by the WebApp itself right after it's launched via the
+    ?startapp=verify_<vid> link above — completes verification using the
+    SAME logic as the bot-DM flow (Database.userdb.complete_verification),
+    just triggered from inside the Mini App instead of a bot message."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad_request"}, status=400)
+
+    vid = body.get("vid")
+    user = _verify_init_data(body.get("init_data", ""))
+    if not vid or not user:
+        return web.json_response({"error": "auth_required"}, status=401)
+
+    from Database.userdb import udb
+    result = await udb.complete_verification(user["id"], vid)
+    if not result:
+        return web.json_response({"error": "invalid_or_expired"}, status=400)
+
+    return web.json_response({"verified": True, "tier": result["tier"]})
 
 
 def register_webapp_routes(routes: web.RouteTableDef) -> None:
@@ -199,6 +231,7 @@ def register_webapp_routes(routes: web.RouteTableDef) -> None:
     routes.get("/webapp/api/feed")(_feed_handler)
     routes.post("/webapp/api/like")(_like_handler)
     routes.get("/webapp/api/verify-info")(_verify_info_handler)
+    routes.post("/webapp/api/verify-complete")(_verify_complete_handler)
     routes.get("/webapp")(_index_handler)
     routes.get("/webapp/")(_index_handler)
     if os.path.isdir(WEBAPP_ASSETS_DIR):
