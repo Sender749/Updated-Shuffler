@@ -200,6 +200,23 @@ html, body {
   100% { opacity: 0; transform: translate(-50%, -50%) scale(1.1); }
 }
 
+/* Persistent pause indicator — unlike tap-flash (which briefly flashes and
+   fades for a resume tap), this STAYS on screen the whole time the video is
+   manually paused, so it's always clear the user stopped it on purpose
+   rather than it looking frozen/broken. Removed the instant playback
+   resumes. */
+.pause-indicator {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #fff;
+  font-size: 46px;
+  pointer-events: none;
+  z-index: 4;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.6));
+}
+
 /* Seek bar: a draggable scrubber, positioned up from the very bottom edge
    on purpose — right at the edge is where phone system-gesture zones (back-
    swipe, home-indicator swipe-up) and screen-protector dead spots live, so
@@ -291,6 +308,31 @@ html, body {
 .popup-btn-secondary {
   background: rgba(255, 255, 255, 0.1);
   color: #fff;
+}
+
+/* Verified-success toast — brief, auto-dismissing, doesn't block the feed
+   underneath it (unlike the popups, which are full-screen). */
+.toast {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20, 20, 20, 0.92);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 12px 20px;
+  border-radius: 12px;
+  z-index: 60;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  opacity: 1;
+}
+
+.toast.hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(-12px);
 }
 
 .empty-state {
