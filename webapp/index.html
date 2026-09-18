@@ -43,6 +43,18 @@
     </div>
   </div>
 
+  <div id="fsub-overlay" class="overlay hidden">
+    <div class="popup">
+      <div class="popup-icon">📢</div>
+      <div class="popup-title">Join Required Channel(s)</div>
+      <div class="popup-text">
+        Please join the channel(s) below, then tap "I've Joined" to continue.
+      </div>
+      <div id="fsub-channel-buttons"></div>
+      <button id="fsub-recheck-btn" class="popup-btn">✅ I've Joined</button>
+    </div>
+  </div>
+
   <div id="verify-overlay" class="overlay hidden">
     <div class="popup">
       <div class="popup-icon">🔒</div>
@@ -56,6 +68,8 @@
   </div>
 
   <div id="verified-toast" class="toast hidden">✅ Verified! Enjoy unlimited reels.</div>
+
+  <div id="free-count-badge" class="free-count-badge hidden"></div>
 
   <script src="/webapp/static/app.js" defer></script>
 </body>
