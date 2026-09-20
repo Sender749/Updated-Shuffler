@@ -48,11 +48,6 @@ html, body {
   pointer-events: none;
 }
 
-/* Loading indicator shown over the poster frame while a reel's video is
-   still buffering — replaces a plain blank/black screen with a clearly
-   visible "something is happening" cue. Hidden as soon as playback can
-   start (see app.js's 'canplay'/'playing' listeners), shown again on
-   mid-playback stalls too. */
 .reel-spinner {
   position: absolute;
   top: 50%;
@@ -102,8 +97,6 @@ html, body {
   z-index: 2;
 }
 
-/* Right-side action bar (mute + like) — transparent background, stacked
-   vertically, vertically centered on the right edge of the screen. */
 .side-actions {
   position: absolute;
   right: 12px;
@@ -126,15 +119,9 @@ html, body {
   align-items: center;
   gap: 4px;
   cursor: pointer;
-  /* Soft shadow instead of a background chip — keeps icons legible over any
-     video frame without adding a visible button background. */
   filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.6));
 }
 
-/* Icons: transparent/outline by default, filled with a light colour once
-   active (unmuted / liked). Heart uses one shared SVG with its fill toggled
-   by .active; the speaker swaps between two SVG variants in app.js, so its
-   outline/filled styling comes from the base rule + the colour rule below. */
 .icon-svg {
   width: 30px;
   height: 30px;
@@ -174,9 +161,6 @@ html, body {
   color: #fff;
 }
 
-/* Tap-to-play/pause feedback: a big icon that briefly flashes in the center
-   of the screen, same idea as most video apps use so a tap doesn't feel
-   like it did nothing. */
 .tap-flash {
   position: absolute;
   top: 50%;
@@ -200,11 +184,6 @@ html, body {
   100% { opacity: 0; transform: translate(-50%, -50%) scale(1.1); }
 }
 
-/* Persistent pause indicator — unlike tap-flash (which briefly flashes and
-   fades for a resume tap), this STAYS on screen the whole time the video is
-   manually paused, so it's always clear the user stopped it on purpose
-   rather than it looking frozen/broken. Removed the instant playback
-   resumes. */
 .pause-indicator {
   position: absolute;
   top: 50%;
@@ -217,12 +196,27 @@ html, body {
   filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.6));
 }
 
-/* Seek bar: a draggable scrubber, positioned up from the very bottom edge
-   on purpose — right at the edge is where phone system-gesture zones (back-
-   swipe, home-indicator swipe-up) and screen-protector dead spots live, so
-   a bar flush against it is hard to grab reliably. The visible line stays
-   thin; the actual touch target (seek-wrap) is much taller via padding, so
-   fingers don't need pixel-perfect accuracy to grab it. */
+.tap-to-play-indicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.45);
+  padding: 18px 24px;
+  border-radius: 16px;
+  animation: tapToPlayPulse 1.6s ease-in-out infinite;
+}
+
+.tap-to-play-label {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+@keyframes tapToPlayPulse {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+  50% { transform: translate(-50%, -50%) scale(1.08); opacity: 0.85; }
+}
+
 .seek-wrap {
   position: absolute;
   left: 12px;
@@ -310,8 +304,6 @@ html, body {
   color: #fff;
 }
 
-/* Verified-success toast — brief, auto-dismissing, doesn't block the feed
-   underneath it (unlike the popups, which are full-screen). */
 .toast {
   position: fixed;
   top: 16px;
@@ -335,9 +327,6 @@ html, body {
   transform: translateX(-50%) translateY(-12px);
 }
 
-/* Remaining-free-reels badge — fixed to the viewport (not any one reel) so
-   it stays put and stays accurate while scrolling, positioned just below
-   where the "tap for sound" mute hint sits for whichever reel is active. */
 .free-count-badge {
   position: fixed;
   top: 56px;
@@ -356,9 +345,6 @@ html, body {
   display: none;
 }
 
-/* Force-sub popup's channel list — one full-width button per channel,
-   opened externally (Telegram handles joining), stacked above the
-   "I've Joined" recheck button. */
 #fsub-channel-buttons {
   display: flex;
   flex-direction: column;
