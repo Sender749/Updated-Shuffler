@@ -63,7 +63,18 @@ class Bot(Client):
             api_hash=API_HASH,
             bot_token=BOT_TOKEN,
             plugins=dict(root="TechifyBots"),
-            workers=200,
+            # Pyrogram uses `workers` as a thread-pool size for dispatching
+            # update handlers. On Koyeb's free tier (0.1 vCPU), only one
+            # thread can ever actually execute Python bytecode at a time
+            # regardless (the GIL) — so 200 threads bought zero real
+            # parallelism and instead cost pure overhead: thread creation at
+            # startup, per-thread memory, and OS scheduling/context-switch
+            # churn competing for a CPU fraction that can barely service one
+            # thread efficiently. 8 is comfortably enough concurrent-update
+            # headroom for a small/medium bot without over-subscribing a
+            # fractional CPU — this alone should measurably reduce general
+            # command-response sluggishness.
+            workers=8,
             sleep_threshold=15
         )
         self.START_TIME = time.time()
