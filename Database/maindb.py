@@ -91,60 +91,68 @@ class Database:
         self.cached_settings_ts = 0  # force a fresh read next call
         return await self.get_bot_settings()
 
-    async def check_and_increment_usage(self, user_id: int):
-        limits, user = await asyncio.gather(self.get_global_limits(), self.get_user(user_id))
-        free_limit = limits["free_limit"]
-        plan = user.get("plan", "free")
-        if plan == "prime":
-            return {"allowed": True, "plan": "prime", "count": None, "limit": None}
-        today = datetime.now()
-        last_request = user.get("last_request_date")
-        daily_count = user.get("daily_count", 0)
-        if last_request and last_request.strftime("%Y-%m-%d") != today.strftime("%Y-%m-%d"):
-            daily_count = 0
-        if daily_count >= free_limit:
-            return {"allowed": False, "plan": "free", "count": free_limit, "limit": free_limit}
-        new_count = daily_count + 1
-        await self.async_user_collection.update_one(
-            {"_id": user_id},
-            {"$set": {"daily_count": new_count, "last_request_date": today}}
-        )
-        return {"allowed": True, "plan": "free", "count": new_count, "limit": free_limit}
+    async def _increment_daily_usage(self, user_id: int, count_field: str, date_field: str,
+                                      limit: int, amount: int = 1) -> dict:
+        """
+        Shared day-rollover + increment logic — used by BOTH the DM flow
+        (check_and_increment_usage) and the WebApp reels flow
+        (check_and_increment_reels_usage). Literally the same function
+        underneath, just pointed at different Mongo fields and limits, so
+        each keeps its own separate quota (DM's FREE_LIMIT vs reels'
+        REELS_FREE_LIMIT) while sharing identical reset-at-midnight and
+        counting behavior — no more risk of the two drifting apart.
 
-    async def check_and_increment_reels_usage(self, user_id: int, requested: int) -> dict:
+        Returns how much of `amount` could actually be served within
+        today's remaining quota: `serve` may be less than `amount` (a
+        partial batch right at the limit) or 0 (already exhausted). Prime
+        users are always unlimited (limit/count come back as None).
         """
-        Same idea as check_and_increment_usage, but for the WebApp reels
-        feed, with its own separate counter/limit (REELS_FREE_LIMIT) and its
-        own granularity: since one feed request can hand out several videos
-        at once, this reports how many of the `requested` count are actually
-        still within today's free quota — 'serve' may be less than
-        `requested` (a partial batch right at the limit) or 0 (already over).
-        Prime users are unlimited, same as the DM flow.
-        """
-        from vars import REELS_FREE_LIMIT
         user = await self.get_user(user_id)
         plan = (user or {}).get("plan", "free")
         if plan == "prime":
-            return {"allowed": True, "serve": requested, "count": None, "limit": None}
+            return {"allowed": True, "serve": amount, "count": None, "limit": None}
 
         today = datetime.now()
-        last_request = (user or {}).get("reels_last_request_date")
-        daily_count = (user or {}).get("reels_daily_count", 0)
+        last_request = (user or {}).get(date_field)
+        daily_count = (user or {}).get(count_field, 0)
         if last_request and last_request.strftime("%Y-%m-%d") != today.strftime("%Y-%m-%d"):
             daily_count = 0
 
-        remaining = max(0, REELS_FREE_LIMIT - daily_count)
+        remaining = max(0, limit - daily_count)
         if remaining <= 0:
-            return {"allowed": False, "serve": 0, "count": daily_count, "limit": REELS_FREE_LIMIT}
+            return {"allowed": False, "serve": 0, "count": daily_count, "limit": limit}
 
-        serve = min(requested, remaining)
+        serve = min(amount, remaining)
         new_count = daily_count + serve
         await self.async_user_collection.update_one(
             {"_id": user_id},
-            {"$set": {"reels_daily_count": new_count, "reels_last_request_date": today}},
+            {"$set": {count_field: new_count, date_field: today}},
             upsert=True,
         )
-        return {"allowed": True, "serve": serve, "count": new_count, "limit": REELS_FREE_LIMIT}
+        return {"allowed": True, "serve": serve, "count": new_count, "limit": limit}
+
+    async def check_and_increment_usage(self, user_id: int):
+        limits = await self.get_global_limits()
+        result = await self._increment_daily_usage(
+            user_id, "daily_count", "last_request_date", limits["free_limit"], amount=1
+        )
+        # Same shape existing DM callers (cmds.py, link_generator.py) expect.
+        return {
+            "allowed": result["allowed"],
+            "plan": "prime" if result["limit"] is None else "free",
+            "count": result["count"],
+            "limit": result["limit"],
+        }
+
+    async def check_and_increment_reels_usage(self, user_id: int, requested: int) -> dict:
+        """Same function as check_and_increment_usage above (see
+        _increment_daily_usage) — just the WebApp reels feed's own separate
+        counter/limit (REELS_FREE_LIMIT), since one feed request can hand
+        out several videos at once."""
+        from vars import REELS_FREE_LIMIT
+        return await self._increment_daily_usage(
+            user_id, "reels_daily_count", "reels_last_request_date", REELS_FREE_LIMIT, amount=requested
+        )
 
     async def update_global_limit(self, limit_type, new_value):
         if limit_type == "free":
@@ -160,7 +168,10 @@ class Database:
         try:
             result = await self.async_user_collection.update_many(
                 {"plan": "free"},
-                {"$set": {"daily_count": 0, "last_request_date": datetime.now()}}
+                {"$set": {
+                    "daily_count": 0, "last_request_date": datetime.now(),
+                    "reels_daily_count": 0, "reels_last_request_date": datetime.now(),
+                }}
             )
             return result.modified_count
         except Exception as e:
