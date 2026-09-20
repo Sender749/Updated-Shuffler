@@ -87,6 +87,22 @@ async def _feed_handler(request: web.Request) -> web.Response:
     user = _verify_init_data(request.query.get("init_data", ""))
     user_id = user.get("id") if user else None
 
+    if settings.get("is_fsub", False):
+        from TechifyBots.fsub import check_fsub_for_webapp
+        from bot import bot
+        if not user_id:
+            # Can't check membership without a verified identity — play it
+            # safe and gate, same reasoning as the verification check below.
+            return web.json_response({
+                "enabled": True, "fsub_required": True, "channels": [], "items": [], "next": None,
+            })
+        not_joined = await check_fsub_for_webapp(bot, user_id)
+        if not_joined:
+            return web.json_response({
+                "enabled": True, "fsub_required": True, "channels": not_joined, "items": [], "next": None,
+            })
+
+    remaining_free = None
     if settings.get("is_verify", True):
         # Same verification system as the bot's DM flow (same "verified"
         # status/expiry) — just with its own separate free-play counter.
@@ -103,9 +119,12 @@ async def _feed_handler(request: web.Request) -> web.Response:
             usage = await mdb.check_and_increment_reels_usage(user_id, limit)
             if usage["serve"] <= 0:
                 return web.json_response(
-                    {"enabled": True, "verification_required": True, "items": [], "next": None}
+                    {"enabled": True, "verification_required": True, "items": [], "next": None,
+                     "remaining_free": 0}
                 )
             limit = usage["serve"]  # cap this batch to whatever's left of today's free quota
+            if usage["limit"] is not None:  # None means unlimited (prime) — no count to show
+                remaining_free = max(0, usage["limit"] - usage["count"])
 
     if user_id:
         # Verified Telegram user — server tracks what they've already been
@@ -145,7 +164,10 @@ async def _feed_handler(request: web.Request) -> web.Response:
             "liked": str(doc["_id"]) in liked_ids,
         })
     next_cursor = items[-1]["id"] if items else None
-    return web.json_response({"enabled": True, "items": items, "next": next_cursor})
+    response = {"enabled": True, "items": items, "next": next_cursor}
+    if remaining_free is not None:
+        response["remaining_free"] = remaining_free
+    return web.json_response(response)
 
 
 async def _like_handler(request: web.Request) -> web.Response:
