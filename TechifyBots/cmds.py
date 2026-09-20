@@ -204,7 +204,13 @@ def _get_prev_from_cache(uid: int, current_file_id: str):
 async def start_command(client, message):
     uid = message.from_user.id
 
-    if await udb.is_user_banned(uid):
+    # These two checks don't depend on each other — running them concurrently
+    # instead of one-after-the-other shaves a full DB round trip off every
+    # single /start, which matters more than it sounds on a slow connection.
+    is_banned, bot_settings = await asyncio.gather(
+        udb.is_user_banned(uid), mdb.get_bot_settings()
+    )
+    if is_banned:
         await message.reply(
             "**🚫 You are banned from using this bot**",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Support", url=f"https://t.me/{ADMIN_USERNAME}")]])
@@ -218,7 +224,6 @@ async def start_command(client, message):
     # always sent the user to a bare /start and their shared file was lost.
     start_data = message.command[1] if len(message.command) > 1 else None
 
-    bot_settings = await mdb.get_bot_settings()
     if bot_settings["is_fsub"] and not await get_fsub(client, message, start_param=start_data):
         return
 
