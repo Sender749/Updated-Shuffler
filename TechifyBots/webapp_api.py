@@ -102,7 +102,6 @@ async def _feed_handler(request: web.Request) -> web.Response:
                 "enabled": True, "fsub_required": True, "channels": not_joined, "items": [], "next": None,
             })
 
-    remaining_free = None
     if settings.get("is_verify", True):
         # Same verification system as the bot's DM flow (same "verified"
         # status/expiry) — just with its own separate free-play counter.
@@ -119,12 +118,9 @@ async def _feed_handler(request: web.Request) -> web.Response:
             usage = await mdb.check_and_increment_reels_usage(user_id, limit)
             if usage["serve"] <= 0:
                 return web.json_response(
-                    {"enabled": True, "verification_required": True, "items": [], "next": None,
-                     "remaining_free": 0}
+                    {"enabled": True, "verification_required": True, "items": [], "next": None}
                 )
             limit = usage["serve"]  # cap this batch to whatever's left of today's free quota
-            if usage["limit"] is not None:  # None means unlimited (prime) — no count to show
-                remaining_free = max(0, usage["limit"] - usage["count"])
 
     if user_id:
         # Verified Telegram user — server tracks what they've already been
@@ -164,10 +160,7 @@ async def _feed_handler(request: web.Request) -> web.Response:
             "liked": str(doc["_id"]) in liked_ids,
         })
     next_cursor = items[-1]["id"] if items else None
-    response = {"enabled": True, "items": items, "next": next_cursor}
-    if remaining_free is not None:
-        response["remaining_free"] = remaining_free
-    return web.json_response(response)
+    return web.json_response({"enabled": True, "items": items, "next": next_cursor})
 
 
 async def _like_handler(request: web.Request) -> web.Response:
