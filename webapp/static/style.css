@@ -327,24 +327,6 @@ html, body {
   transform: translateX(-50%) translateY(-12px);
 }
 
-.free-count-badge {
-  position: fixed;
-  top: 56px;
-  right: 16px;
-  background: rgba(0, 0, 0, 0.5);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 6px 10px;
-  border-radius: 20px;
-  z-index: 3;
-  pointer-events: none;
-}
-
-.free-count-badge.hidden {
-  display: none;
-}
-
 #fsub-channel-buttons {
   display: flex;
   flex-direction: column;
