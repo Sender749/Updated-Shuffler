@@ -27,7 +27,6 @@
   const fsubOverlayEl = document.getElementById("fsub-overlay");
   const fsubChannelButtonsEl = document.getElementById("fsub-channel-buttons");
   const fsubRecheckBtn = document.getElementById("fsub-recheck-btn");
-  const freeCountBadgeEl = document.getElementById("free-count-badge");
 
   let nextCursor = null;
   let loadingMore = false;
@@ -105,15 +104,6 @@
     loadingEl.classList.remove("hidden");
     await loadMore();
   });
-
-  function updateFreeCountBadge(remaining) {
-    if (remaining === null || remaining === undefined) {
-      freeCountBadgeEl.classList.add("hidden");
-      return;
-    }
-    freeCountBadgeEl.textContent = remaining === 1 ? "1 free reel left" : `${remaining} free reels left`;
-    freeCountBadgeEl.classList.remove("hidden");
-  }
 
   verifyBtn.addEventListener("click", async () => {
     if (!verifyInfoCache) verifyInfoCache = await fetchVerifyInfo();
@@ -423,11 +413,9 @@
         return;
       }
       if (data.verification_required) {
-        updateFreeCountBadge(data.remaining_free);
         await showVerifyOverlay();
         return;
       }
-      updateFreeCountBadge(data.remaining_free);
 
       if (!data.items || data.items.length === 0) {
         loadingEl.classList.add("hidden");
