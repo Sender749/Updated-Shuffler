@@ -9,7 +9,7 @@ _BOT_USERNAME_CACHE = None
 
 # ── Membership cache {user_id: {channel_id: (joined: bool, ts: float)}} ──────
 _FSUB_CACHE: dict = {}
-_FSUB_CACHE_TTL = 120  # seconds
+_FSUB_CACHE_TTL = 300  # seconds (a joined user is re-checked with Telegram only every 5 min)
 
 # ── Channel info cache {channel_id: (title, invite_link, ts)} ────────────────
 # BUGFIX: this used to cache the invite link forever (no timestamp/TTL) and

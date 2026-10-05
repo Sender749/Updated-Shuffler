@@ -84,11 +84,67 @@ def _invalidate_video_cache(category: str = None):
         VIDEO_CACHE.clear()
 
 
+# Only the fields send_video() actually needs — keeps the in-memory list small
+# and the DB transfer fast (full documents are not needed to pick a file).
+_VIDEO_FIELDS = {"video_id": 1, "file_id": 1, "media_type": 1, "duration": 1, "source_channel_id": 1}
+_VIDEO_CACHE_LOCKS: dict = {}
+_VIDEO_REFRESHING: set = set()
+
+
+def _duration_filter():
+    """Mongo filter for the DM duration limit (vars.py → DM_MAX_DURATION_MINUTES).
+    Returns None when no limit is set."""
+    import vars as _vars
+    limit_min = float(getattr(_vars, "DM_MAX_DURATION_MINUTES", 0) or 0)
+    if limit_min <= 0:
+        return None
+    limit_sec = int(limit_min * 60)
+    if getattr(_vars, "DM_ALLOW_UNKNOWN_DURATION", True):
+        # known duration within the limit, OR no duration saved (photo/document/...)
+        return {"$or": [{"duration": {"$lte": limit_sec}}, {"duration": None}]}
+    return {"duration": {"$gt": 0, "$lte": limit_sec}}
+
+
+async def _load_videos(category: str):
+    extra = _duration_filter()
+    if category == "all":
+        return await mdb.get_all_videos(extra_filter=extra, projection=_VIDEO_FIELDS)
+    channel_ids = CATEGORIES.get(category)
+    if channel_ids:
+        return await mdb.get_videos_by_channels(channel_ids, extra_filter=extra, projection=_VIDEO_FIELDS)
+    return await mdb.get_all_videos(extra_filter=extra, projection=_VIDEO_FIELDS)
+
+
+async def _refresh_video_cache(category: str):
+    """Reload one category. A lock makes sure only ONE reload runs at a time —
+    before, many users hitting an expired cache together each scanned the whole DB."""
+    lock = _VIDEO_CACHE_LOCKS.setdefault(category, asyncio.Lock())
+    async with lock:
+        cached = VIDEO_CACHE.get(category)
+        if cached and time.monotonic() - cached[1] <= VIDEO_CACHE_TTL:
+            return cached[0]   # someone else just refreshed it
+        videos = await _load_videos(category)
+        VIDEO_CACHE[category] = (videos, time.monotonic())
+        return videos
+
+
+async def warm_video_cache():
+    """Pre-load every category at startup (called from bot.py)."""
+    for cat in ["all"] + list(CATEGORIES.keys()):
+        try:
+            await _refresh_video_cache(cat)
+        except Exception as e:
+            print(f"[warm_video_cache] {cat}: {e}")
+
+
 async def _get_videos_for_category(category: str):
     """
     Return video list for a category, using per-category TTL cache.
     Does NOT fall back to 'all' if category is empty — returns [] so caller
     can show a proper "no files" message.
+    SPEED: when the cache has expired, the OLD list is returned instantly and
+    refreshed in the background, so no user waits for a database reload.
+    The DM duration limit (DM_MAX_DURATION_MINUTES) is applied while loading.
     """
     now = time.monotonic()
     cached = VIDEO_CACHE.get(category)
@@ -96,18 +152,20 @@ async def _get_videos_for_category(category: str):
         videos, ts = cached
         if now - ts <= VIDEO_CACHE_TTL:
             return videos
+        if videos:
+            if category not in _VIDEO_REFRESHING:
+                _VIDEO_REFRESHING.add(category)
 
-    if category == "all":
-        videos = await mdb.get_all_videos()
-    else:
-        channel_ids = CATEGORIES.get(category)
-        if channel_ids:
-            videos = await mdb.get_videos_by_channels(channel_ids)
-        else:
-            videos = await mdb.get_all_videos()
-
-    VIDEO_CACHE[category] = (videos, now)
-    return videos
+                async def _bg(cat=category):
+                    try:
+                        await _refresh_video_cache(cat)
+                    except Exception as e:
+                        print(f"[video cache refresh] {cat}: {e}")
+                    finally:
+                        _VIDEO_REFRESHING.discard(cat)
+                asyncio.create_task(_bg())
+            return videos
+    return await _refresh_video_cache(category)
 
 
 # ==================== CACHE HELPERS ====================
@@ -494,32 +552,45 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
         getattr(message, "animation", None),
     ])
 
-    if delete_prev_msg:
+    # SPEED: the placeholder (a Telegram API call) is now created IN THE BACKGROUND
+    # while the checks below already run, instead of every click waiting for it
+    # first. _stop_anim() / _fail() wait for it only when it is really needed.
+    placeholder = None
+    anim_task = None
+    stop_anim = asyncio.Event()
+
+    async def _try_delete(m):
         try:
-            await message.delete()
+            await m.delete()
         except Exception:
             pass
-        placeholder = await client.send_message(cid, _ANIM_FRAMES[0])
-    elif msg_has_media:
-        # Edit the caption on the existing media msg during checks
-        try:
-            await message.edit_caption(_ANIM_FRAMES[0])
-        except Exception:
-            pass
-        placeholder = message  # will use edit_media later
-    else:
+
+    async def _make_placeholder():
+        if delete_prev_msg:
+            ph, _ = await asyncio.gather(
+                client.send_message(cid, _ANIM_FRAMES[0]),
+                _try_delete(message),
+            )
+            return ph
+        if msg_has_media:
+            # Edit the caption on the existing media msg during checks
+            try:
+                await message.edit_caption(_ANIM_FRAMES[0])
+            except Exception:
+                pass
+            return message  # will use edit_media later
         # Plain text message (e.g. /getvideos cmd) — edit it
         try:
             await message.edit_text(_ANIM_FRAMES[0])
-            placeholder = message
+            return message
         except Exception:
-            placeholder = await client.send_message(cid, _ANIM_FRAMES[0])
+            return await client.send_message(cid, _ANIM_FRAMES[0])
 
-    # Start animation
-    stop_anim = asyncio.Event()
+    # Animation loop
     async def _anim_loop():
         i = 1
-        while not stop_anim.is_set():
+        # hard cap (~24s) so a crash further down can never leave it editing forever
+        while not stop_anim.is_set() and i < 60:
             try:
                 if msg_has_media and placeholder is message and not delete_prev_msg:
                     await placeholder.edit_caption(_ANIM_FRAMES[i % len(_ANIM_FRAMES)])
@@ -529,12 +600,24 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
                 pass
             i += 1
             await asyncio.sleep(0.4)
-    anim_task = asyncio.create_task(_anim_loop())
+
+    async def _setup():
+        nonlocal placeholder, anim_task
+        placeholder = await _make_placeholder()
+        if not stop_anim.is_set():
+            anim_task = asyncio.create_task(_anim_loop())
+
+    setup_task = asyncio.create_task(_setup())
+
+    async def _stop_anim():
+        stop_anim.set()
+        await setup_task          # the placeholder must exist before it is edited/deleted
+        if anim_task:
+            anim_task.cancel()
 
     async def _fail(text: str, markup=None):
         """Stop animation and show error/info in the placeholder."""
-        stop_anim.set()
-        anim_task.cancel()
+        await _stop_anim()
         try:
             if msg_has_media and placeholder is message and not delete_prev_msg:
                 await placeholder.edit_caption(text, reply_markup=markup)
@@ -563,8 +646,7 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
         return
 
     if bot_settings["is_fsub"] and not await get_fsub(client, message, user_id=uid):
-        stop_anim.set()
-        anim_task.cancel()
+        await _stop_anim()
         # fsub handler sends its own message; just clean up placeholder
         if placeholder is not message:
             try:
@@ -596,8 +678,7 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
                 if usage["allowed"]:
                     usage_text = f"📊 Daily Limit : {usage['count']}/{usage['limit']}"
                 else:
-                    stop_anim.set()
-                    anim_task.cancel()
+                    await _stop_anim()
                     # Delete placeholder then show verify prompt
                     if placeholder is not message:
                         try:
@@ -630,13 +711,22 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
         await _fail(no_files_text, no_file_markup)
         return
 
-    recent    = USER_RECENT_VIDEOS.get(uid, set())
-    available = [v for v in videos if v["video_id"] not in recent]
-    if not available:
-        USER_RECENT_VIDEOS[uid] = set()
-        available = videos
-
-    item = random.choice(available)
+    recent = USER_RECENT_VIDEOS.get(uid, set())
+    item = None
+    # SPEED: pick at random and retry a few times instead of building a filtered
+    # copy of the WHOLE list on every click (slow on a big list / small CPU).
+    if len(recent) < len(videos):
+        for _ in range(15):
+            cand = random.choice(videos)
+            if cand["video_id"] not in recent:
+                item = cand
+                break
+    if item is None:
+        available = [v for v in videos if v["video_id"] not in recent]
+        if not available:
+            USER_RECENT_VIDEOS[uid] = set()
+            available = videos
+        item = random.choice(available)
     USER_RECENT_VIDEOS.setdefault(uid, set()).add(item["video_id"])
     if len(USER_RECENT_VIDEOS[uid]) > 20:
         USER_RECENT_VIDEOS[uid] = set()
@@ -669,8 +759,7 @@ async def send_video(client, message, uid=None, delete_prev_msg=False):
     buttons = _make_file_buttons(uid, has_previous)
 
     # ── Stop animation and send/edit the file ─────────────────────────────
-    stop_anim.set()
-    anim_task.cancel()
+    await _stop_anim()
 
     # Always try to edit placeholder into the file
     edit_target = placeholder  # could be the media msg itself or a fresh text msg

@@ -24,6 +24,14 @@ def _is_admin(uid: int) -> bool:
     return uid in ADMIN_IDS
 
 
+async def _safe_answer(query):
+    """Acknowledge a button tap in the background so it never delays the real work."""
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+
 @Client.on_callback_query()
 async def callback_query_handler(client, query: CallbackQuery):
     try:
@@ -141,7 +149,7 @@ async def callback_query_handler(client, query: CallbackQuery):
                 )
 
         elif data == "getvideo":
-            await query.answer()
+            asyncio.create_task(_safe_answer(query))   # SPEED: don't wait for Telegram's ack
             bot_settings = await mdb.get_bot_settings()
             if bot_settings["is_fsub"] and not await get_fsub(client, query.message, user_id=uid):
                 return
