@@ -21,6 +21,11 @@ Where to find each value in Cloudflare's dashboard:
                              leave "" for a normal/default bucket
   - R2_FREE_STORAGE_GB    → Cloudflare's free tier is 10GB per account; leave
                              at 10 unless you're on a paid plan with more
+  - R2_STOP_AT_GB         → OPTIONAL. The bot stops uploading to this account
+                             once it reaches this many GB, and moves to the
+                             next account (or stops mirroring if none left).
+                             Leave it out and it defaults to 9.5 GB, so you
+                             never touch the real 10GB limit.
 """
 
 # ============================== ACCOUNT 1 ==============================
@@ -31,6 +36,7 @@ R2_BUCKET_NAME_1 = "reels-videos"
 R2_PUBLIC_BASE_URL_1 = "https://pub-babd88c1825d4f4c9bb30bcf13f8aa62.r2.dev"
 R2_JURISDICTION_1 = "us"
 R2_FREE_STORAGE_GB_1 = 10
+R2_STOP_AT_GB_1 = 9.5   # bot stops using this account at 9.5 GB (change to 9 for more safety)
 
 # ============================== ACCOUNT 2 ==============================
 # To add a second account: delete the leading "# " from each line below and
@@ -42,6 +48,7 @@ R2_FREE_STORAGE_GB_1 = 10
 # R2_PUBLIC_BASE_URL_2 = ""
 # R2_JURISDICTION_2 = ""
 # R2_FREE_STORAGE_GB_2 = 10
+# R2_STOP_AT_GB_2 = 9.5
 
 # ============================== ACCOUNT 3 ==============================
 # (copy ACCOUNT 2's 7 lines again, change every "_2" to "_3", uncomment, fill in)
@@ -64,6 +71,12 @@ def _collect_accounts():
         bucket = getattr(module, f"R2_BUCKET_NAME_{idx}", "")
         public_url = (getattr(module, f"R2_PUBLIC_BASE_URL_{idx}", "") or "").rstrip("/")
         if access_key and secret_key and bucket and public_url:
+            free_gb = float(getattr(module, f"R2_FREE_STORAGE_GB_{idx}", 10))
+            # Safety limit: stop BEFORE the real free-tier limit. Default 9.5 GB
+            # (or 95% of free_gb for other plan sizes). Never above free_gb.
+            default_stop = 9.5 if free_gb == 10 else free_gb * 0.95
+            stop_gb = float(getattr(module, f"R2_STOP_AT_GB_{idx}", default_stop))
+            stop_gb = min(stop_gb, free_gb)
             accounts.append({
                 "id": f"api{idx}",
                 "account_id": acc_id,
@@ -72,7 +85,8 @@ def _collect_accounts():
                 "bucket_name": bucket,
                 "public_base_url": public_url,
                 "jurisdiction": (getattr(module, f"R2_JURISDICTION_{idx}", "") or "").strip().lower(),
-                "free_storage_gb": float(getattr(module, f"R2_FREE_STORAGE_GB_{idx}", 10)),
+                "free_storage_gb": free_gb,
+                "stop_limit_gb": stop_gb,
             })
         idx += 1
     return accounts
