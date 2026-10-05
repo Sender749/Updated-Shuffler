@@ -74,15 +74,8 @@ CATEGORIES: dict = {
 }
 # How many category buttons to show per row (admin-configurable)
 CATEGORY_BUTTONS_PER_ROW: int = 2
-# ── DM file duration limit ───────────────────────────────────────────────────
-# Max duration (in MINUTES) of the files the bot sends in DM — applies to the
-# /getvideos command and the 🎬 Get File / ➡️ Next buttons. Files longer than
-# this are never sent. Example: 15 → only files of 15 minutes or less.
-# 0 = no limit (default, old behaviour).
-DM_MAX_DURATION_MINUTES = float(os.getenv("DM_MAX_DURATION_MINUTES", "0"))
-# Photos / documents / stickers have no duration saved in the DB (it is 0).
-# True  → still send them even when a limit is set.
-# False → send ONLY files that have a known duration within the limit.
+
+DM_MAX_DURATION_MINUTES = float(os.getenv("DM_MAX_DURATION_MINUTES", "30")) #in MINUTES / 0 for dissable
 DM_ALLOW_UNKNOWN_DURATION = os.getenv("DM_ALLOW_UNKNOWN_DURATION", "True").lower() == "true"
 # ─────────────────────────────────────────────────────────────────────────────
 # Allow premium users to download files (disables protect_content for them)
