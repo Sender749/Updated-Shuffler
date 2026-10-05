@@ -440,9 +440,24 @@ class Database:
         for _ in count():
             try:
                 any_room = False
+                # Re-sync the tracked total with what Cloudflare REALLY holds, so the
+                # stop limit stays correct even if the counter was reset or files
+                # were deleted/added outside the bot. Falls back silently on error.
+                from TechifyBots import r2_uploader
+                for account in R2_ACCOUNTS:
+                    try:
+                        ok, _tf, _vf, live_bytes, _err = await r2_uploader.get_bucket_usage(account)
+                        if ok:
+                            await self.async_r2_usage.update_one(
+                                {"_id": account["id"]}, {"$set": {"total_bytes": live_bytes}}, upsert=True
+                            )
+                    except Exception as e:
+                        print(f"[check_r2_usage_alert] live sync failed for {account['id']}: {e}")
                 for account in R2_ACCOUNTS:
                     usage = await self.get_r2_usage(account["id"])
-                    limit_bytes = account["free_storage_gb"] * (1024 ** 3)
+                    # Percent is measured against the safety STOP limit (default 9.5 GB),
+                    # not the raw 10 GB, so "full" = "bot has stopped uploading here".
+                    limit_bytes = account.get("stop_limit_gb", account["free_storage_gb"]) * (1024 ** 3)
                     percent = (usage["total_bytes"] / limit_bytes) * 100 if limit_bytes else 0
                     if percent < 100:
                         any_room = True
@@ -450,9 +465,9 @@ class Database:
                         used_gb = usage["total_bytes"] / (1024 ** 3)
                         msg = (
                             f"⚠️ **Reels WebApp — R2 Storage Alert ({account['id']})**\n\n"
-                            f"Usage: **{used_gb:.2f} GB** / {account['free_storage_gb']:.0f} GB free tier "
+                            f"Usage: **{used_gb:.2f} GB** (bot stops at {account.get('stop_limit_gb', account['free_storage_gb']):g} GB, free tier {account['free_storage_gb']:.0f} GB) "
                             f"(**{percent:.1f}%**)\n\n"
-                            f"This account is approaching Cloudflare R2's free storage limit. "
+                            f"This account is approaching its safety stop limit. "
                             f"The bot will automatically move on to the next configured account "
                             f"once this one fills up, but it's worth knowing which one is closest.\n\n"
                             f"Add another account block in r2_accounts.py (ACCOUNT {int(account['id'][3:]) + 1}), "
@@ -473,7 +488,7 @@ class Database:
                 if not any_room and not all_full_alert_sent:
                     msg = (
                         "🛑 **Reels WebApp — All R2 accounts are full**\n\n"
-                        f"All {len(R2_ACCOUNTS)} configured R2 account(s) have hit their free storage "
+                        f"All {len(R2_ACCOUNTS)} configured R2 account(s) have reached their safety stop "
                         "limit. **Mirroring to R2 has stopped** — new videos will keep indexing "
                         "normally for DMs, but won't be added to the reels feed until there's room "
                         "again.\n\n"
