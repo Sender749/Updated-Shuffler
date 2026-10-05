@@ -94,6 +94,14 @@ class Bot(Client):
 
         asyncio.create_task(_keep_alive_loop())
 
+        # Pre-load the DM file list so the first "Get File" click after a restart /
+        # wake-up from sleep is as fast as every other click.
+        try:
+            from TechifyBots.cmds import warm_video_cache
+            asyncio.create_task(warm_video_cache())
+        except Exception as e:
+            print(f"[warm_video_cache] skipped: {e}")
+
         # Registers Telegram's native "/" command menu — shown to every user
         # when they type "/" in the chat, with a short description each.
         # Set fresh on every startup so it's always in sync with what the
