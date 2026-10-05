@@ -28,14 +28,15 @@ def _client_ctx(account: dict):
 async def pick_account_with_room() -> dict:
     """
     Returns the first configured account (in api1, api2, api3... order) that
-    still has headroom under its own free_storage_gb, or None if every
-    configured account is full. This is what makes the pool "automatic" —
+    is still under its own safety stop limit (stop_limit_gb, default 9.5 GB —
+    always below the real free_storage_gb), or None if every configured
+    account has reached its stop limit. This is what makes the pool "automatic" —
     callers never need to know which account they're writing to.
     """
     from Database.maindb import mdb
     for account in R2_ACCOUNTS:
         usage = await mdb.get_r2_usage(account["id"])
-        limit_bytes = account["free_storage_gb"] * (1024 ** 3)
+        limit_bytes = account.get("stop_limit_gb", account["free_storage_gb"]) * (1024 ** 3)
         if usage["total_bytes"] < limit_bytes:
             return account
     return None
@@ -109,3 +110,32 @@ async def test_connection(account: dict) -> tuple:
         if hasattr(e, "response"):
             code = e.response.get("Error", {}).get("Code", "") or str(e.response.get("ResponseMetadata", {}).get("HTTPStatusCode", ""))
         return False, f"{code or type(e).__name__}: {e}"
+
+
+async def get_bucket_usage(account: dict) -> tuple:
+    """Ask Cloudflare directly what is really inside ONE account's bucket.
+    Returns (ok, total_files, video_files, total_bytes, detail).
+    Never raises — on any error returns ok=False so callers can fall back
+    to the MongoDB counter."""
+    if not account:
+        return False, 0, 0, 0, "Not configured."
+    total_files = 0
+    video_files = 0
+    total_bytes = 0
+    try:
+        async with _client_ctx(account) as s3:
+            paginator = s3.get_paginator("list_objects_v2")
+            async for page in paginator.paginate(Bucket=account["bucket_name"]):
+                for obj in page.get("Contents", []) or []:
+                    key = obj.get("Key", "")
+                    total_files += 1
+                    total_bytes += int(obj.get("Size", 0) or 0)
+                    if key.startswith("reels/") and not key.startswith("reels/thumbs/") and key.lower().endswith(".mp4"):
+                        video_files += 1
+        return True, total_files, video_files, total_bytes, ""
+    except Exception as e:
+        code = ""
+        if hasattr(e, "response"):
+            code = e.response.get("Error", {}).get("Code", "") or ""
+        print(f"[r2_uploader] get_bucket_usage failed on {account.get('id')}: {e}")
+        return False, 0, 0, 0, f"{code or type(e).__name__}"
