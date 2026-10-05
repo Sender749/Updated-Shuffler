@@ -93,19 +93,49 @@ async def stats_command(client, message):
         state = "✅ ON" if bot_settings_now["webapp_enabled"] else "❌ OFF"
         STATS += f"\n\n**🎥 Reels WebApp:** {state}\n**☁️ R2 Storage** ({len(R2_ACCOUNTS)} account(s)):"
         any_room = False
-        for account in R2_ACCOUNTS:
+        from TechifyBots import r2_uploader
+
+        async def _live(acc):
+            try:
+                return await asyncio.wait_for(r2_uploader.get_bucket_usage(acc), timeout=90)
+            except Exception:
+                return False, 0, 0, 0, "timeout"
+
+        live_results = await asyncio.gather(*[_live(a) for a in R2_ACCOUNTS])
+
+        for account, (ok, total_files_r2, video_files_r2, live_bytes, err) in zip(R2_ACCOUNTS, live_results):
             usage = await mdb.get_r2_usage(account["id"])
-            used_gb = usage["total_bytes"] / (1024 ** 3)
+            if ok:
+                # Real number straight from Cloudflare. Also write it back to the
+                # MongoDB counter so the upload limit / 85% alert use the true value.
+                if live_bytes != usage["total_bytes"]:
+                    try:
+                        await mdb.async_r2_usage.update_one(
+                            {"_id": account["id"]}, {"$set": {"total_bytes": live_bytes}}, upsert=True
+                        )
+                    except Exception as e:
+                        print(f"[stats] failed to sync r2 counter for {account['id']}: {e}")
+                used_bytes = live_bytes
+            else:
+                used_bytes = usage["total_bytes"]
+            used_gb = used_bytes / (1024 ** 3)
+            stop_gb = account.get("stop_limit_gb", account["free_storage_gb"])
             percent = (used_gb / account["free_storage_gb"] * 100) if account["free_storage_gb"] else 0
-            flag = "🔴" if percent >= 100 else ("🟡" if percent >= 85 else "🟢")
-            if percent < 100:
+            stop_percent = (used_gb / stop_gb * 100) if stop_gb else 100
+            flag = "🔴" if stop_percent >= 100 else ("🟡" if stop_percent >= 85 else "🟢")
+            if stop_percent < 100:
                 any_room = True
             STATS += (
                 f"\n{flag} `{account['id']}`: `{used_gb:.2f} GB / {account['free_storage_gb']:.0f} GB` "
-                f"(`{percent:.1f}%`)"
+                f"(`{percent:.1f}%`)\n      🛑 Stops at: `{stop_gb:g} GB`"
+                + (" — **limit reached, skipped**" if stop_percent >= 100 else "")
             )
+            if ok:
+                STATS += f"\n      📁 Files in Cloudflare: `{total_files_r2}` (🎞 videos: `{video_files_r2}`)"
+            else:
+                STATS += f"\n      ⚠️ Couldn't read Cloudflare ({err}) — showing last tracked value"
         if not any_room:
-            STATS += "\n\n🛑 **All accounts full — mirroring has stopped.**"
+            STATS += "\n\n🛑 **All accounts reached their stop limit — mirroring has stopped.**"
     else:
         STATS += "\n\n**🎥 Reels WebApp:** Not configured (missing R2_* env vars)"
 
