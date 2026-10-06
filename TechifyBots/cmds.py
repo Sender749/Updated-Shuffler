@@ -106,13 +106,15 @@ def _duration_filter():
 
 
 async def _load_videos(category: str):
+    """Query the videos collection directly (works with ANY version of maindb.py —
+    no dependency on new maindb function signatures)."""
     extra = _duration_filter()
-    if category == "all":
-        return await mdb.get_all_videos(extra_filter=extra, projection=_VIDEO_FIELDS)
-    channel_ids = CATEGORIES.get(category)
-    if channel_ids:
-        return await mdb.get_videos_by_channels(channel_ids, extra_filter=extra, projection=_VIDEO_FIELDS)
-    return await mdb.get_all_videos(extra_filter=extra, projection=_VIDEO_FIELDS)
+    channel_ids = CATEGORIES.get(category) if category != "all" else None
+    query = {"source_channel_id": {"$in": channel_ids}} if channel_ids else {}
+    if extra:
+        query = {"$and": [query, extra]} if query else extra
+    cursor = mdb.async_video_collection.find(query, _VIDEO_FIELDS)
+    return [v async for v in cursor]
 
 
 async def _refresh_video_cache(category: str):
