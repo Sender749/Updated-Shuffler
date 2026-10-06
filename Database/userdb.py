@@ -2,6 +2,8 @@ from typing import Any
 from vars import MONGO_URI
 from motor import motor_asyncio
 import pytz
+import asyncio
+import time
 IST = pytz.timezone("Asia/Kolkata")
 client: motor_asyncio.AsyncIOMotorClient[Any] = motor_asyncio.AsyncIOMotorClient(MONGO_URI)
 MT = client["Adultbot"]
@@ -13,6 +15,11 @@ class dypixx:
         self.verify_users = MT["verify_users"]  # For verification system
         self.verify_id = MT["verify_id"]  # For verification tokens
         self.cache : dict[int, dict[str, Any]] = {}
+        # Speed caches (see is_user_banned / get_verify_user)
+        self._ban_cache : dict[int, tuple] = {}
+        self._verify_cache : dict[int, tuple] = {}
+        self._verify_inflight : dict[int, Any] = {}
+        self._verify_gen : dict[int, int] = {}
 
     async def addUser(self, user_id: int, name: str) -> dict[str, Any] | None:
         try:
@@ -51,6 +58,7 @@ class dypixx:
                 "reason": reason
             }
             await self.banned_users.insert_one(ban_dypixx)
+            self._ban_cache[user_id] = (True, time.monotonic())
             return True
         except Exception as e:
             print("Error in banUser: ", e)
@@ -59,6 +67,7 @@ class dypixx:
     async def unban_user(self, user_id: int) -> bool:
         try:
             result = await self.banned_users.delete_one({"user_id": user_id})
+            self._ban_cache[user_id] = (False, time.monotonic())
             return result.deleted_count > 0
         except Exception as e:
             print("Error in unbanUser: ", e)
@@ -66,7 +75,14 @@ class dypixx:
 
     async def is_user_banned(self, user_id: int) -> bool:
         try:
+            now = time.monotonic()
+            cached = self._ban_cache.get(user_id)
+            if cached and now - cached[1] < 60:
+                return cached[0]
             user = await self.banned_users.find_one({"user_id": user_id})
+            if len(self._ban_cache) > 50000:
+                self._ban_cache.clear()
+            self._ban_cache[user_id] = (user is not None, now)
             return user is not None
         except Exception as e:
             print("Error in isUserBanned: ", e)
@@ -101,7 +117,30 @@ class dypixx:
     # ==================== VERIFICATION SYSTEM METHODS ====================
     
     async def get_verify_user(self, user_id: int) -> dict[str, Any] | None:
-        """Get verification data for a user"""
+        """Get verification data for a user.
+        SPEED: one verification check calls this ~6 times at once for the same user.
+        Concurrent calls now share ONE DB read, and the result is reused for 3s.
+        Every write (update_verify_user) invalidates it immediately."""
+        now = time.monotonic()
+        cached = self._verify_cache.get(user_id)
+        if cached and now - cached[1] < 3:
+            return cached[0]
+        gen = self._verify_gen.get(user_id, 0)
+        task = self._verify_inflight.get(user_id)
+        if task is None:
+            task = asyncio.ensure_future(self._fetch_verify_user(user_id))
+            self._verify_inflight[user_id] = task
+
+            def _done(t, uid=user_id):
+                if self._verify_inflight.get(uid) is t:
+                    self._verify_inflight.pop(uid, None)
+            task.add_done_callback(_done)
+        user = await asyncio.shield(task)
+        if user is not None and self._verify_gen.get(user_id, 0) == gen:
+            self._verify_cache[user_id] = (user, time.monotonic())
+        return user
+
+    async def _fetch_verify_user(self, user_id: int) -> dict[str, Any] | None:
         try:
             from datetime import datetime
             user = await self.verify_users.find_one({"user_id": user_id})
@@ -128,6 +167,9 @@ class dypixx:
                 {"$set": value}, 
                 upsert=True
             )
+            self._verify_gen[user_id] = self._verify_gen.get(user_id, 0) + 1
+            self._verify_cache.pop(user_id, None)
+            self._verify_inflight.pop(user_id, None)
             return True
         except Exception as e:
             print("Error in update_verify_user: ", e)

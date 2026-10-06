@@ -30,6 +30,9 @@ class Database:
         self.async_reel_likes = self.async_db["reel_likes"]
         self.async_reel_views = self.async_db["reel_views"]
         self.async_mirror_channels = self.async_db["mirror_channels"]
+        # In-memory cache of each user's chosen category (saves one DB round trip
+        # on every file request). Written through on set_user_category().
+        self._category_cache = {}
         asyncio.create_task(self.check_and_reset_daily_counts())
         asyncio.create_task(self.check_premium_expire())
         asyncio.create_task(self.check_r2_usage_alert())
@@ -303,8 +306,11 @@ class Database:
         if not await self.async_video_collection.find_one({"video_id": video_id}):
             await self.async_video_collection.insert_one(video_data)
 
-    async def get_all_videos(self):
-        return [v async for v in self.async_video_collection.find({})]
+    async def get_all_videos(self, extra_filter: dict = None, projection: dict = None):
+        """All videos. `extra_filter` (Mongo query) and `projection` are optional —
+        with neither, this behaves exactly like before."""
+        cursor = self.async_video_collection.find(extra_filter or {}, projection)
+        return [v async for v in cursor]
 
     async def count_all_videos(self):
         return await self.async_video_collection.count_documents({})
@@ -380,8 +386,16 @@ class Database:
 
     async def get_user_category(self, user_id: int) -> str:
         """Return the user's selected category name, or 'all' if not set."""
+        now = time.monotonic()
+        cached = self._category_cache.get(user_id)
+        if cached and now - cached[1] < 600:
+            return cached[0]
         doc = await self.async_user_collection.find_one({"_id": user_id}, {"category": 1})
-        return (doc or {}).get("category", "all")
+        category = (doc or {}).get("category", "all")
+        if len(self._category_cache) > 50000:
+            self._category_cache.clear()
+        self._category_cache[user_id] = (category, now)
+        return category
 
     async def set_user_category(self, user_id: int, category: str):
         """Persist the user's chosen category."""
@@ -390,14 +404,15 @@ class Database:
             {"$set": {"category": category}},
             upsert=True,
         )
+        self._category_cache[user_id] = (category, time.monotonic())
 
-    async def get_videos_by_channels(self, channel_ids: list):
-        """Return videos whose source_channel_id is in channel_ids."""
-        return [
-            v async for v in self.async_video_collection.find(
-                {"source_channel_id": {"$in": channel_ids}}
-            )
-        ]
+    async def get_videos_by_channels(self, channel_ids: list, extra_filter: dict = None, projection: dict = None):
+        """Return videos whose source_channel_id is in channel_ids.
+        `extra_filter` / `projection` are optional (default = old behaviour)."""
+        query = {"source_channel_id": {"$in": channel_ids}}
+        if extra_filter:
+            query = {"$and": [query, extra_filter]}
+        return [v async for v in self.async_video_collection.find(query, projection)]
 
     # ── REELS WEBAPP / R2 USAGE (per account) ────────────────────────────────
     # We never call Cloudflare's own usage API (no extra credentials needed) —
